@@ -1,0 +1,205 @@
+/*
+ * 文件名: app/src/main/java/com/toptea/topteakds/ScannerActivity.kt
+ * 描述: 规范 4.2 和 7.2, 负责扫码 (已修改为使用前置摄像头)
+ */
+package com.toptea.topteakds
+
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.common.InputImage
+import com.toptea.topteakds.databinding.ActivityScannerBinding
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+class ScannerActivity : AppCompatActivity() {
+
+    private lateinit var binding: ActivityScannerBinding
+    private lateinit var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>
+    private lateinit var cameraExecutor: ExecutorService
+    private lateinit var barcodeScanner: BarcodeScanner
+
+    private var isScanProcessed = false // 确保只返回一次结果
+
+    companion object {
+        const val CAMERA_PERMISSION_REQUEST_CODE = 101
+        const val EXTRA_SCANNED_DATA = "scannedData"
+        const val EXTRA_ERROR_MESSAGE = "errorMessage"
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityScannerBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        if (checkCameraPermission()) {
+            startCamera()
+        } else {
+            requestCameraPermission()
+        }
+    }
+
+    private fun checkCameraPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestCameraPermission() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(android.Manifest.permission.CAMERA),
+            CAMERA_PERMISSION_REQUEST_CODE
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startCamera()
+            } else {
+                // 规范 7.2: 用户拒绝权限
+                Log.e("ScannerActivity", "Camera permission denied by user")
+                returnError("Camera permission was denied")
+            }
+        }
+    }
+
+    private fun startCamera() {
+        cameraExecutor = Executors.newSingleThreadExecutor()
+        cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        barcodeScanner = BarcodeScanning.getClient() // 规范 7.2: 使用 ML Kit
+
+        cameraProviderFuture.addListener({
+            try {
+                val cameraProvider = cameraProviderFuture.get()
+                bindCameraUseCases(cameraProvider)
+            } catch (e: Exception) {
+                Log.e("ScannerActivity", "Failed to get CameraProvider", e)
+                returnError("Failed to initialize camera: ${e.message}")
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun bindCameraUseCases(cameraProvider: ProcessCameraProvider) {
+        val preview = Preview.Builder()
+            .build()
+            .also {
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
+            }
+
+        val imageAnalysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .also {
+                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { scannedData ->
+                    // 规范 7.2: 扫描到第一个有效条码
+                    if (!isScanProcessed) {
+                        isScanProcessed = true
+                        Log.d("ScannerActivity", "Barcode found: $scannedData")
+                        returnSuccess(scannedData)
+                    }
+                })
+            }
+
+        // ========================================================
+        //  !!! 唯一的修改在这里 !!!
+        //  从 .DEFAULT_BACK_CAMERA 更改为 .DEFAULT_FRONT_CAMERA
+        // ========================================================
+        val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+
+        try {
+            cameraProvider.unbindAll()
+            cameraProvider.bindToLifecycle(
+                this,
+                cameraSelector,
+                preview,
+                imageAnalysis
+            )
+        } catch (e: Exception) {
+            // 如果设备没有前置摄像头, 这里会失败
+            Log.e("ScannerActivity", "Camera use case binding failed (Is front camera available?)", e)
+            returnError("Failed to bind front camera: ${e.message}")
+        }
+    }
+
+    private fun returnSuccess(data: String) {
+        val resultIntent = Intent().apply {
+            putExtra(EXTRA_SCANNED_DATA, data)
+        }
+        setResult(Activity.RESULT_OK, resultIntent)
+        finish()
+    }
+
+
+
+    private fun returnError(errorMessage: String) {
+        val resultIntent = Intent().apply {
+            putExtra(EXTRA_ERROR_MESSAGE, errorMessage)
+        }
+        setResult(Activity.RESULT_CANCELED, resultIntent)
+        finish()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::cameraExecutor.isInitialized) {
+            cameraExecutor.shutdown()
+        }
+        if (::barcodeScanner.isInitialized) {
+            barcodeScanner.close()
+        }
+    }
+}
+
+/**
+ * 规范 7.2: 使用 ML Kit Barcode Scanning 分析图像
+ */
+private class BarcodeAnalyzer(private val onBarcodeFound: (String) -> Unit) : ImageAnalysis.Analyzer {
+
+    private val scanner = BarcodeScanning.getClient()
+
+    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
+    override fun analyze(imageProxy: ImageProxy) {
+        val mediaImage = imageProxy.image
+        if (mediaImage != null) {
+            val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+
+            scanner.process(image)
+                .addOnSuccessListener { barcodes ->
+                    // 规范 7.2: 返回结果
+                    barcodes.firstOrNull()?.rawValue?.let {
+                        onBarcodeFound(it)
+                    }
+                }
+                .addOnFailureListener {
+                    Log.e("BarcodeAnalyzer", "ML Kit scanning failed", it)
+                }
+                .addOnCompleteListener {
+                    imageProxy.close()
+                }
+        } else {
+            imageProxy.close()
+        }
+    }
+}

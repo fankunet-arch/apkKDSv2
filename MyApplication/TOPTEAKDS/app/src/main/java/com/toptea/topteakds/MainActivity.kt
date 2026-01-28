@@ -22,6 +22,10 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.exifinterface.media.ExifInterface
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import com.toptea.topteakds.databinding.ActivityMainBinding
 import org.json.JSONObject
 import java.io.File
@@ -49,8 +53,14 @@ class MainActivity : AppCompatActivity() {
     // WebView 文件选择 (<input type="file">) 回调
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var cameraPhotoUri: Uri? = null
+    private var cameraPhotoFile: File? = null
+    private var cachedLatitude: Double = 0.0
+    private var cachedLongitude: Double = 0.0
     private lateinit var fileChooserCameraLauncher: ActivityResultLauncher<Intent>
     private lateinit var fileChooserGalleryLauncher: ActivityResultLauncher<Intent>
+
+    // GPS 定位客户端
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
 
     companion object {
         const val TAG = "MainActivity"
@@ -61,6 +71,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         webView = binding.webView
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         // 规范 2.1: 必须在加载 URL 之前执行强制缓存清除
         clearWebViewCache()
@@ -109,11 +120,20 @@ class MainActivity : AppCompatActivity() {
      * 注册 WebView 文件选择器（<input type="file">）所需的 ActivityResultLauncher
      */
     private fun setupFileChooserLaunchers() {
-        // 拍照回调
+        // 拍照回调：拍照成功后将已缓存的GPS坐标写入EXIF，再返回URI给WebView
         fileChooserCameraLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
-            if (result.resultCode == Activity.RESULT_OK && cameraPhotoUri != null) {
+            if (result.resultCode == Activity.RESULT_OK && cameraPhotoUri != null && cameraPhotoFile != null) {
+                // 拍照成功，将打开相机前已获取的GPS坐标写入EXIF
+                try {
+                    val exif = ExifInterface(cameraPhotoFile!!.absolutePath)
+                    exif.setLatLong(cachedLatitude, cachedLongitude)
+                    exif.saveAttributes()
+                    Log.d(TAG, "GPS EXIF written: lat=$cachedLatitude, lon=$cachedLongitude")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to write GPS EXIF", e)
+                }
                 filePathCallback?.onReceiveValue(arrayOf(cameraPhotoUri!!))
             } else {
                 // 用户取消，必须传 null 否则 <input> 会锁死
@@ -121,6 +141,7 @@ class MainActivity : AppCompatActivity() {
             }
             filePathCallback = null
             cameraPhotoUri = null
+            cameraPhotoFile = null
         }
 
         // 相册选择回调
@@ -166,6 +187,65 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 强制获取GPS定位，成功后打开系统相机拍照。
+     * GPS获取失败时取消文件选择并返回null给WebView。
+     */
+    @SuppressLint("MissingPermission")
+    private fun getLocationThenLaunchCamera() {
+        fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+            .addOnSuccessListener { location ->
+                if (location != null) {
+                    cachedLatitude = location.latitude
+                    cachedLongitude = location.longitude
+                    Log.d(TAG, "GPS obtained: lat=${location.latitude}, lon=${location.longitude}")
+                    launchSystemCamera()
+                } else {
+                    // 尝试获取上次已知位置
+                    fusedLocationClient.lastLocation.addOnSuccessListener { lastLocation ->
+                        if (lastLocation != null) {
+                            cachedLatitude = lastLocation.latitude
+                            cachedLongitude = lastLocation.longitude
+                            Log.d(TAG, "Last GPS obtained: lat=${lastLocation.latitude}, lon=${lastLocation.longitude}")
+                            launchSystemCamera()
+                        } else {
+                            Log.e(TAG, "GPS unavailable, cancelling file chooser camera")
+                            filePathCallback?.onReceiveValue(null)
+                            filePathCallback = null
+                        }
+                    }.addOnFailureListener { e ->
+                        Log.e(TAG, "Failed to get last location: ${e.message}")
+                        filePathCallback?.onReceiveValue(null)
+                        filePathCallback = null
+                    }
+                }
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "Failed to get GPS location: ${e.message}")
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = null
+            }
+    }
+
+    /**
+     * GPS已获取成功，打开系统相机拍照
+     */
+    private fun launchSystemCamera() {
+        val photoFile = createImageFile()
+        if (photoFile != null) {
+            cameraPhotoFile = photoFile
+            val authority = "${applicationContext.packageName}.fileprovider"
+            cameraPhotoUri = FileProvider.getUriForFile(this, authority, photoFile)
+            val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
+            }
+            fileChooserCameraLauncher.launch(cameraIntent)
+        } else {
+            filePathCallback?.onReceiveValue(null)
+            filePathCallback = null
+        }
+    }
+
+    /**
      * 规范 2.2: WebView 环境要求
      * 规范 3.1: 注入 JavaScript 对象
      */
@@ -206,20 +286,8 @@ class MainActivity : AppCompatActivity() {
                 val captureEnabled = fileChooserParams?.isCaptureEnabled ?: false
 
                 if (captureEnabled) {
-                    // 打开系统相机拍照
-                    val photoFile = createImageFile()
-                    if (photoFile != null) {
-                        val authority = "${applicationContext.packageName}.fileprovider"
-                        cameraPhotoUri = FileProvider.getUriForFile(this@MainActivity, authority, photoFile)
-                        val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                            putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
-                        }
-                        fileChooserCameraLauncher.launch(cameraIntent)
-                    } else {
-                        filePathCallback?.onReceiveValue(null)
-                        filePathCallback = null
-                        return false
-                    }
+                    // 强制先获取GPS定位，成功后再打开系统相机
+                    getLocationThenLaunchCamera()
                 } else {
                     // 打开相册选择器
                     val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {

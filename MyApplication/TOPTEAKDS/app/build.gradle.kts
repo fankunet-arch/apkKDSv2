@@ -72,4 +72,10 @@ dependencies {
 
     // 4. Google ML Kit (规范 8.2 要求的扫码库)
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
+
+    // 5. Google Play Services Location (For GPS check)
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // 6. Exif Interface (For writing GPS data to JPG)
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 }

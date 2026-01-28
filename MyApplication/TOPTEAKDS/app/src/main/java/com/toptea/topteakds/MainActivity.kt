@@ -35,6 +35,11 @@ class MainActivity : AppCompatActivity() {
     private var scanSuccessCallback: String? = null
     private var scanErrorCallback: String? = null
 
+    // 拍照取证回调
+    private lateinit var evidencePhotoLauncher: ActivityResultLauncher<Intent>
+    private var evidenceSuccessCallback: String? = null
+    private var evidenceErrorCallback: String? = null
+
     companion object {
         const val TAG = "MainActivity"
     }
@@ -49,6 +54,7 @@ class MainActivity : AppCompatActivity() {
         clearWebViewCache()
 
         setupScannerLauncher()
+        setupEvidencePhotoLauncher()
         setupWebView()
 
         // 加载 URL
@@ -152,6 +158,41 @@ class MainActivity : AppCompatActivity() {
 
         val intent = Intent(this, ScannerActivity::class.java)
         scannerLauncher.launch(intent)
+    }
+
+    /**
+     * 准备拍照取证 Activity 启动器
+     */
+    private fun setupEvidencePhotoLauncher() {
+        evidencePhotoLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                val data = result.data?.getStringExtra(EvidencePhotoActivity.EXTRA_PHOTO_DATA)
+                if (data != null && evidenceSuccessCallback != null) {
+                    runJsCallback(evidenceSuccessCallback!!, data)
+                }
+            } else {
+                val error = result.data?.getStringExtra(EvidencePhotoActivity.EXTRA_ERROR_MESSAGE)
+                    ?: "Photo capture was cancelled"
+                if (evidenceErrorCallback != null) {
+                    runJsCallback(evidenceErrorCallback!!, error)
+                }
+            }
+            evidenceSuccessCallback = null
+            evidenceErrorCallback = null
+        }
+    }
+
+    /**
+     * 由 WebAppInterface 调用, 启动拍照取证
+     */
+    fun startEvidencePhotoActivity(successCallback: String, errorCallback: String) {
+        this.evidenceSuccessCallback = successCallback
+        this.evidenceErrorCallback = errorCallback
+
+        val intent = Intent(this, EvidencePhotoActivity::class.java)
+        evidencePhotoLauncher.launch(intent)
     }
 
     /**

@@ -4,9 +4,11 @@
  */
 package com.toptea.topteakds // <-- 已修正
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
@@ -21,6 +23,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -61,6 +64,9 @@ class MainActivity : AppCompatActivity() {
 
     // GPS 定位客户端
     private lateinit var fusedLocationClient: FusedLocationProviderClient
+
+    // 相机+GPS 运行时权限请求 launcher
+    private lateinit var cameraPermissionLauncher: ActivityResultLauncher<Array<String>>
 
     companion object {
         const val TAG = "MainActivity"
@@ -120,6 +126,24 @@ class MainActivity : AppCompatActivity() {
      * 注册 WebView 文件选择器（<input type="file">）所需的 ActivityResultLauncher
      */
     private fun setupFileChooserLaunchers() {
+        // 权限请求回调：相机+GPS权限全部授权后才进入GPS获取流程
+        cameraPermissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
+            val fineLocGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+            val coarseLocGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
+
+            if (cameraGranted && (fineLocGranted || coarseLocGranted)) {
+                // 权限全部授权，进入GPS获取 → 拍照流程
+                getLocationThenLaunchCamera()
+            } else {
+                Log.e(TAG, "Camera or Location permission denied")
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = null
+            }
+        }
+
         // 拍照回调：拍照成功后将已缓存的GPS坐标写入EXIF，再返回URI给WebView
         fileChooserCameraLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -183,6 +207,29 @@ class MainActivity : AppCompatActivity() {
         } catch (e: IOException) {
             Log.e(TAG, "Failed to create image file", e)
             null
+        }
+    }
+
+    /**
+     * 检查相机和GPS运行时权限，已授权则直接进入GPS获取流程，未授权则弹出系统授权弹窗。
+     */
+    private fun checkPermissionsAndCapture() {
+        val cameraOk = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val fineLocOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseLocOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        if (cameraOk && (fineLocOk || coarseLocOk)) {
+            // 权限已就绪，直接获取GPS并拍照
+            getLocationThenLaunchCamera()
+        } else {
+            // 请求缺失的权限
+            cameraPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
         }
     }
 
@@ -286,8 +333,8 @@ class MainActivity : AppCompatActivity() {
                 val captureEnabled = fileChooserParams?.isCaptureEnabled ?: false
 
                 if (captureEnabled) {
-                    // 强制先获取GPS定位，成功后再打开系统相机
-                    getLocationThenLaunchCamera()
+                    // 先检查相机+GPS权限，授权后再获取GPS定位并打开相机
+                    checkPermissionsAndCapture()
                 } else {
                     // 打开相册选择器
                     val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {

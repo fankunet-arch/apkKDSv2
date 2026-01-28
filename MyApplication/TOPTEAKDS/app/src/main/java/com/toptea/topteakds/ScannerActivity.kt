@@ -1,6 +1,6 @@
 /*
  * 文件名: app/src/main/java/com/toptea/topteakds/ScannerActivity.kt
- * 描述: 规范 4.2 和 7.2, 负责扫码 (使用后置摄像头，如不可用则自动切换前置)
+ * 描述: 规范 4.2 和 7.2, 负责扫码 (强制使用前置摄像头)
  */
 package com.toptea.topteakds
 
@@ -123,36 +123,21 @@ class ScannerActivity : AppCompatActivity() {
                 })
             }
 
-        // 使用后置摄像头进行条码扫描（分辨率更高，扫码效果更好）
-        // 如果后置摄像头不可用，尝试使用前置摄像头作为备选
+        // 强制使用前置摄像头进行条码扫描
+        val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+
         try {
             cameraProvider.unbindAll()
-
-            // 首先尝试后置摄像头
-            val backCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-            try {
-                cameraProvider.bindToLifecycle(
-                    this,
-                    backCameraSelector,
-                    preview,
-                    imageAnalysis
-                )
-                Log.d("ScannerActivity", "Using back camera for scanning")
-            } catch (backCameraException: Exception) {
-                // 后置摄像头不可用，尝试前置摄像头
-                Log.w("ScannerActivity", "Back camera unavailable, trying front camera", backCameraException)
-                val frontCameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
-                cameraProvider.bindToLifecycle(
-                    this,
-                    frontCameraSelector,
-                    preview,
-                    imageAnalysis
-                )
-                Log.d("ScannerActivity", "Using front camera for scanning (fallback)")
-            }
+            cameraProvider.bindToLifecycle(
+                this,
+                cameraSelector,
+                preview,
+                imageAnalysis
+            )
+            Log.d("ScannerActivity", "Using front camera for scanning")
         } catch (e: Exception) {
-            Log.e("ScannerActivity", "No camera available for scanning", e)
-            returnError("Failed to initialize camera: ${e.message}")
+            Log.e("ScannerActivity", "Front camera binding failed", e)
+            returnError("Failed to initialize front camera: ${e.message}")
         }
     }
 

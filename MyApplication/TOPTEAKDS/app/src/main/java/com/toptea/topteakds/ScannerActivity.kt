@@ -1,6 +1,6 @@
 /*
  * 文件名: app/src/main/java/com/toptea/topteakds/ScannerActivity.kt
- * 描述: 规范 4.2 和 7.2, 负责扫码 (已修改为使用前置摄像头)
+ * 描述: 规范 4.2 和 7.2, 负责扫码 (使用后置摄像头，如不可用则自动切换前置)
  */
 package com.toptea.topteakds
 
@@ -112,7 +112,8 @@ class ScannerActivity : AppCompatActivity() {
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
-                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { scannedData ->
+                // 传入共享的 barcodeScanner 避免资源泄漏
+                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer(barcodeScanner) { scannedData ->
                     // 规范 7.2: 扫描到第一个有效条码
                     if (!isScanProcessed) {
                         isScanProcessed = true
@@ -122,24 +123,36 @@ class ScannerActivity : AppCompatActivity() {
                 })
             }
 
-        // ========================================================
-        //  !!! 唯一的修改在这里 !!!
-        //  从 .DEFAULT_BACK_CAMERA 更改为 .DEFAULT_FRONT_CAMERA
-        // ========================================================
-        val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
-
+        // 使用后置摄像头进行条码扫描（分辨率更高，扫码效果更好）
+        // 如果后置摄像头不可用，尝试使用前置摄像头作为备选
         try {
             cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(
-                this,
-                cameraSelector,
-                preview,
-                imageAnalysis
-            )
+
+            // 首先尝试后置摄像头
+            val backCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            try {
+                cameraProvider.bindToLifecycle(
+                    this,
+                    backCameraSelector,
+                    preview,
+                    imageAnalysis
+                )
+                Log.d("ScannerActivity", "Using back camera for scanning")
+            } catch (backCameraException: Exception) {
+                // 后置摄像头不可用，尝试前置摄像头
+                Log.w("ScannerActivity", "Back camera unavailable, trying front camera", backCameraException)
+                val frontCameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                cameraProvider.bindToLifecycle(
+                    this,
+                    frontCameraSelector,
+                    preview,
+                    imageAnalysis
+                )
+                Log.d("ScannerActivity", "Using front camera for scanning (fallback)")
+            }
         } catch (e: Exception) {
-            // 如果设备没有前置摄像头, 这里会失败
-            Log.e("ScannerActivity", "Camera use case binding failed (Is front camera available?)", e)
-            returnError("Failed to bind front camera: ${e.message}")
+            Log.e("ScannerActivity", "No camera available for scanning", e)
+            returnError("Failed to initialize camera: ${e.message}")
         }
     }
 
@@ -174,10 +187,12 @@ class ScannerActivity : AppCompatActivity() {
 
 /**
  * 规范 7.2: 使用 ML Kit Barcode Scanning 分析图像
+ * 注意: scanner 由外部传入并管理生命周期，避免资源泄漏
  */
-private class BarcodeAnalyzer(private val onBarcodeFound: (String) -> Unit) : ImageAnalysis.Analyzer {
-
-    private val scanner = BarcodeScanning.getClient()
+private class BarcodeAnalyzer(
+    private val scanner: BarcodeScanner,
+    private val onBarcodeFound: (String) -> Unit
+) : ImageAnalysis.Analyzer {
 
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {

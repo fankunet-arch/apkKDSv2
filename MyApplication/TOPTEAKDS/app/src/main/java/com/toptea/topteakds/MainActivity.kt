@@ -13,6 +13,7 @@ import android.webkit.CookieManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -56,6 +57,7 @@ class MainActivity : AppCompatActivity() {
         setupScannerLauncher()
         setupEvidencePhotoLauncher()
         setupWebView()
+        setupBackPressHandler()
 
         // 加载 URL
         webView.loadUrl(WEB_APP_URL)
@@ -203,12 +205,14 @@ class MainActivity : AppCompatActivity() {
         if (callbackName.isEmpty()) return
 
         // 将参数转义为 JS 字符串
+        // 注意: JSONObject.quote() 返回的字符串已经包含双引号，不需要再加引号
         val argsString = args.joinToString(",") { arg ->
             when (arg) {
-                is String -> "'${JSONObject.quote(arg)}'" // 确保字符串被正确转义
+                is String -> JSONObject.quote(arg) // quote() 已返回带双引号的字符串
                 is Number -> arg.toString()
                 is Boolean -> arg.toString()
-                else -> "'${JSONObject.quote(arg?.toString() ?: "null")}'"
+                null -> "null"
+                else -> JSONObject.quote(arg.toString())
             }
         }
 
@@ -240,12 +244,22 @@ class MainActivity : AppCompatActivity() {
         return dir.delete()
     }
 
-    override fun onBackPressed() {
-        // 允许 WebView 后退
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
+    /**
+     * 使用 OnBackPressedCallback 替代已废弃的 onBackPressed()
+     * 兼容 Android 13+ (API 33+)
+     */
+    private fun setupBackPressHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                // 允许 WebView 后退
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                } else {
+                    // 禁用此回调以允许系统处理返回
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
     }
 }

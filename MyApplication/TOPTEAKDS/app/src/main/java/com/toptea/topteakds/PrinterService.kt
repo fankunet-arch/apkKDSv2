@@ -77,9 +77,21 @@ object PrinterService {
             if (isTsplMode) {
                 // 分支 B: TSPL 模式 (标签)
                 // 示例尺寸: "50x30 mm"
-                val dimensions = size.split(" ")[0].split("x")
-                val width = dimensions[0]
-                val height = dimensions[1]
+                val sizePart = size.split(" ")[0] // e.g., "50x30"
+                val dimensions = sizePart.split("x", ignoreCase = true)
+
+                // 安全检查：确保尺寸格式正确
+                if (dimensions.size < 2) {
+                    throw Exception("Invalid TSPL size format: '$size'. Expected format: 'WIDTHxHEIGHT mm' (e.g., '50x30 mm')")
+                }
+
+                val width = dimensions[0].trim()
+                val height = dimensions[1].trim()
+
+                // 验证宽高是有效数字
+                if (width.toDoubleOrNull() == null || height.toDoubleOrNull() == null) {
+                    throw Exception("Invalid dimensions in size: '$size'. Width and height must be numbers.")
+                }
 
                 // TODO: 确认你的 TSPL 打印机的间隙
                 val gap = "2" // 标签间隙, 2mm

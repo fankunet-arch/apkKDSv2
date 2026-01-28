@@ -7,9 +7,13 @@ package com.toptea.topteakds // <-- 已修正
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
 import android.util.Log
 import android.webkit.CookieManager
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -17,10 +21,11 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import com.toptea.topteakds.databinding.ActivityMainBinding // <-- 已修正
+import androidx.core.content.FileProvider
+import com.toptea.topteakds.databinding.ActivityMainBinding
 import org.json.JSONObject
 import java.io.File
-// import com.toptea.topteakds.WebAppInterface (在同一个包下, 无需 import)
+import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
 
@@ -41,6 +46,12 @@ class MainActivity : AppCompatActivity() {
     private var evidenceSuccessCallback: String? = null
     private var evidenceErrorCallback: String? = null
 
+    // WebView 文件选择 (<input type="file">) 回调
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var cameraPhotoUri: Uri? = null
+    private lateinit var fileChooserCameraLauncher: ActivityResultLauncher<Intent>
+    private lateinit var fileChooserGalleryLauncher: ActivityResultLauncher<Intent>
+
     companion object {
         const val TAG = "MainActivity"
     }
@@ -56,6 +67,7 @@ class MainActivity : AppCompatActivity() {
 
         setupScannerLauncher()
         setupEvidencePhotoLauncher()
+        setupFileChooserLaunchers()
         setupWebView()
         setupBackPressHandler()
 
@@ -94,6 +106,66 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 注册 WebView 文件选择器（<input type="file">）所需的 ActivityResultLauncher
+     */
+    private fun setupFileChooserLaunchers() {
+        // 拍照回调
+        fileChooserCameraLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK && cameraPhotoUri != null) {
+                filePathCallback?.onReceiveValue(arrayOf(cameraPhotoUri!!))
+            } else {
+                // 用户取消，必须传 null 否则 <input> 会锁死
+                filePathCallback?.onReceiveValue(null)
+            }
+            filePathCallback = null
+            cameraPhotoUri = null
+        }
+
+        // 相册选择回调
+        fileChooserGalleryLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+                val data = result.data!!
+                val uris = mutableListOf<Uri>()
+                // 多张选择
+                if (data.clipData != null) {
+                    val count = data.clipData!!.itemCount
+                    for (i in 0 until count) {
+                        uris.add(data.clipData!!.getItemAt(i).uri)
+                    }
+                } else if (data.data != null) {
+                    // 单张选择
+                    uris.add(data.data!!)
+                }
+                filePathCallback?.onReceiveValue(uris.toTypedArray())
+            } else {
+                filePathCallback?.onReceiveValue(null)
+            }
+            filePathCallback = null
+        }
+    }
+
+    /**
+     * 创建用于相机拍照的临时文件
+     */
+    private fun createImageFile(): File? {
+        return try {
+            val storageDir = externalCacheDir ?: filesDir
+            File.createTempFile(
+                "filechooser_${System.currentTimeMillis()}",
+                ".jpg",
+                storageDir
+            )
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed to create image file", e)
+            null
+        }
+    }
+
+    /**
      * 规范 2.2: WebView 环境要求
      * 规范 3.1: 注入 JavaScript 对象
      */
@@ -117,8 +189,51 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 Log.i(TAG, "WebView page loaded: $url")
-                // 你可以在这里注入一个 JS 来通知 Web 端 "AndroidBridge is ready"
-                // webView.evaluateJavascript("javascript:window.androidBridgeReady=true;", null)
+            }
+        }
+
+        // 支持 <input type="file"> 文件选择
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                callback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                // 如果上一次回调还未完成，先取消
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = callback
+
+                val captureEnabled = fileChooserParams?.isCaptureEnabled ?: false
+
+                if (captureEnabled) {
+                    // 打开系统相机拍照
+                    val photoFile = createImageFile()
+                    if (photoFile != null) {
+                        val authority = "${applicationContext.packageName}.fileprovider"
+                        cameraPhotoUri = FileProvider.getUriForFile(this@MainActivity, authority, photoFile)
+                        val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                            putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
+                        }
+                        fileChooserCameraLauncher.launch(cameraIntent)
+                    } else {
+                        filePathCallback?.onReceiveValue(null)
+                        filePathCallback = null
+                        return false
+                    }
+                } else {
+                    // 打开相册选择器
+                    val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "image/*"
+                        putExtra(
+                            Intent.EXTRA_ALLOW_MULTIPLE,
+                            fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+                        )
+                    }
+                    fileChooserGalleryLauncher.launch(
+                        Intent.createChooser(galleryIntent, "选择照片")
+                    )
+                }
+                return true
             }
         }
     }

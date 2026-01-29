@@ -9,6 +9,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
@@ -59,6 +60,12 @@ class MainActivity : AppCompatActivity() {
     private var cameraPhotoFile: File? = null
     private lateinit var fileChooserCameraLauncher: ActivityResultLauncher<Intent>
     private lateinit var fileChooserGalleryLauncher: ActivityResultLauncher<Intent>
+
+    // GPS + 拍照并行状态：两者同时启动，都完成后才写EXIF并返回
+    private var gpsLocation: Location? = null  // GPS获取到的位置
+    private var gpsFinished = false            // GPS获取是否完成（成功或失败）
+    private var photoFinished = false          // 拍照是否完成
+    private var photoCancelled = false         // 拍照是否被取消
 
     // GPS 定位客户端
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -124,7 +131,7 @@ class MainActivity : AppCompatActivity() {
      * 注册 WebView 文件选择器（<input type="file">）所需的 ActivityResultLauncher
      */
     private fun setupFileChooserLaunchers() {
-        // 权限请求回调：相机+GPS权限全部授权后才进入GPS获取流程
+        // 权限请求回调
         cameraPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
@@ -133,8 +140,8 @@ class MainActivity : AppCompatActivity() {
             val coarseLocGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
 
             if (cameraGranted && (fineLocGranted || coarseLocGranted)) {
-                // 权限全部授权，直接打开相机（GPS在拍照后获取）
-                launchSystemCamera()
+                // 权限全部授权，并行启动GPS获取 + 打开相机
+                startGpsFetchAndCamera()
             } else {
                 Log.e(TAG, "Camera or Location permission denied")
                 filePathCallback?.onReceiveValue(null)
@@ -142,19 +149,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 拍照回调：拍完照后获取GPS → 写入EXIF → 再返回URI给WebView
+        // 拍照回调
         fileChooserCameraLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode == Activity.RESULT_OK && cameraPhotoUri != null && cameraPhotoFile != null) {
-                // 拍照成功，现在获取GPS并写入EXIF
-                fetchGpsWriteExifThenReturn()
+                // 拍照成功，标记完成
+                photoFinished = true
+                photoCancelled = false
+                Log.d(TAG, "Photo taken, photoFinished=true, gpsFinished=$gpsFinished")
+                tryWriteExifAndReturn()
             } else {
-                // 用户取消，必须传 null 否则 <input> 会锁死
-                filePathCallback?.onReceiveValue(null)
-                filePathCallback = null
-                cameraPhotoUri = null
-                cameraPhotoFile = null
+                // 用户取消
+                photoFinished = true
+                photoCancelled = true
+                Log.d(TAG, "Photo cancelled")
+                tryWriteExifAndReturn()
             }
         }
 
@@ -165,14 +175,12 @@ class MainActivity : AppCompatActivity() {
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                 val data = result.data!!
                 val uris = mutableListOf<Uri>()
-                // 多张选择
                 if (data.clipData != null) {
                     val count = data.clipData!!.itemCount
                     for (i in 0 until count) {
                         uris.add(data.clipData!!.getItemAt(i).uri)
                     }
                 } else if (data.data != null) {
-                    // 单张选择
                     uris.add(data.data!!)
                 }
                 filePathCallback?.onReceiveValue(uris.toTypedArray())
@@ -201,7 +209,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 检查相机和GPS运行时权限，已授权则直接打开相机，未授权则弹出系统授权弹窗。
+     * 检查相机和GPS运行时权限
      */
     private fun checkPermissionsAndCapture() {
         val cameraOk = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -209,8 +217,7 @@ class MainActivity : AppCompatActivity() {
         val coarseLocOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
         if (cameraOk && (fineLocOk || coarseLocOk)) {
-            // 权限已就绪，直接打开相机（GPS在拍照完成后获取）
-            launchSystemCamera()
+            startGpsFetchAndCamera()
         } else {
             cameraPermissionLauncher.launch(
                 arrayOf(
@@ -223,60 +230,129 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 拍照完成后：获取GPS → 写入EXIF → 返回URI给WebView。
-     * GPS获取失败时仍返回照片URI（无GPS信息）。
+     * 核心：并行启动GPS获取和打开相机。
+     * 重置所有并行状态，然后同时启动两个操作。
+     * 两者都完成后 tryWriteExifAndReturn() 负责汇合。
+     */
+    private fun startGpsFetchAndCamera() {
+        // 重置并行状态
+        gpsLocation = null
+        gpsFinished = false
+        photoFinished = false
+        photoCancelled = false
+
+        // 并行操作1: 启动GPS获取（后台进行）
+        startGpsFetch()
+
+        // 并行操作2: 立即打开系统相机（用户零等待）
+        launchSystemCamera()
+    }
+
+    /**
+     * 启动GPS获取。先尝试 lastLocation（瞬时），再尝试 getCurrentLocation。
+     * 完成后设置 gpsFinished=true 并调用 tryWriteExifAndReturn()。
      */
     @SuppressLint("MissingPermission")
-    private fun fetchGpsWriteExifThenReturn() {
-        val file = cameraPhotoFile!!
-        val uri = cameraPhotoUri!!
+    private fun startGpsFetch() {
+        Log.d(TAG, "GPS fetch started")
 
-        fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-            .addOnSuccessListener { location ->
-                if (location != null) {
-                    writeExifAndReturn(file, uri, location.latitude, location.longitude)
+        // 第一步：先尝试 lastLocation（瞬时返回，不需要等待硬件）
+        fusedLocationClient.lastLocation
+            .addOnSuccessListener { lastLoc ->
+                if (lastLoc != null) {
+                    // lastLocation 有值，直接使用
+                    Log.d(TAG, "GPS from lastLocation: lat=${lastLoc.latitude}, lon=${lastLoc.longitude}")
+                    gpsLocation = lastLoc
+                    gpsFinished = true
+                    tryWriteExifAndReturn()
                 } else {
-                    // 当前位置为空，尝试 lastLocation
-                    fusedLocationClient.lastLocation
-                        .addOnSuccessListener { last ->
-                            if (last != null) {
-                                writeExifAndReturn(file, uri, last.latitude, last.longitude)
+                    // lastLocation 为空，需要等 getCurrentLocation
+                    Log.d(TAG, "lastLocation is null, requesting getCurrentLocation...")
+                    fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                        .addOnSuccessListener { currentLoc ->
+                            if (currentLoc != null) {
+                                Log.d(TAG, "GPS from getCurrentLocation: lat=${currentLoc.latitude}, lon=${currentLoc.longitude}")
+                                gpsLocation = currentLoc
                             } else {
-                                Log.w(TAG, "GPS unavailable, returning photo without GPS EXIF")
-                                returnFileChooserResult(uri)
+                                Log.w(TAG, "getCurrentLocation returned null")
                             }
+                            gpsFinished = true
+                            tryWriteExifAndReturn()
                         }
-                        .addOnFailureListener {
-                            Log.w(TAG, "lastLocation failed, returning photo without GPS EXIF")
-                            returnFileChooserResult(uri)
+                        .addOnFailureListener { e ->
+                            Log.e(TAG, "getCurrentLocation failed: ${e.message}")
+                            gpsFinished = true
+                            tryWriteExifAndReturn()
                         }
                 }
             }
-            .addOnFailureListener {
-                Log.w(TAG, "getCurrentLocation failed, returning photo without GPS EXIF")
-                returnFileChooserResult(uri)
+            .addOnFailureListener { e ->
+                Log.e(TAG, "lastLocation failed: ${e.message}")
+                // lastLocation 失败，也尝试 getCurrentLocation
+                fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                    .addOnSuccessListener { currentLoc ->
+                        if (currentLoc != null) {
+                            Log.d(TAG, "GPS from getCurrentLocation (fallback): lat=${currentLoc.latitude}, lon=${currentLoc.longitude}")
+                            gpsLocation = currentLoc
+                        }
+                        gpsFinished = true
+                        tryWriteExifAndReturn()
+                    }
+                    .addOnFailureListener { e2 ->
+                        Log.e(TAG, "getCurrentLocation also failed: ${e2.message}")
+                        gpsFinished = true
+                        tryWriteExifAndReturn()
+                    }
             }
     }
 
     /**
-     * 将GPS坐标写入照片EXIF，然后返回URI给WebView
+     * 汇合点：GPS获取和拍照两个并行操作都完成后，执行EXIF写入并返回结果。
+     * 任何一方未完成时直接返回，等另一方完成后再次调用。
      */
-    private fun writeExifAndReturn(file: File, uri: Uri, lat: Double, lon: Double) {
-        try {
-            val exif = ExifInterface(file.absolutePath)
-            exif.setLatLong(lat, lon)
-            exif.saveAttributes()
-            Log.d(TAG, "GPS EXIF written: lat=$lat, lon=$lon to ${file.absolutePath}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to write GPS EXIF", e)
+    private fun tryWriteExifAndReturn() {
+        // 两个操作必须都完成
+        if (!gpsFinished || !photoFinished) {
+            Log.d(TAG, "tryWriteExifAndReturn: waiting (gpsFinished=$gpsFinished, photoFinished=$photoFinished)")
+            return
         }
-        returnFileChooserResult(uri)
-    }
 
-    /**
-     * 将结果返回给WebView的filePathCallback并清理状态
-     */
-    private fun returnFileChooserResult(uri: Uri) {
+        Log.d(TAG, "tryWriteExifAndReturn: both finished. cancelled=$photoCancelled, gpsLocation=$gpsLocation")
+
+        // 拍照被取消
+        if (photoCancelled) {
+            filePathCallback?.onReceiveValue(null)
+            filePathCallback = null
+            cameraPhotoUri = null
+            cameraPhotoFile = null
+            return
+        }
+
+        val file = cameraPhotoFile
+        val uri = cameraPhotoUri
+
+        if (file == null || uri == null) {
+            filePathCallback?.onReceiveValue(null)
+            filePathCallback = null
+            return
+        }
+
+        // 写入GPS EXIF
+        val loc = gpsLocation
+        if (loc != null) {
+            try {
+                val exif = ExifInterface(file.absolutePath)
+                exif.setLatLong(loc.latitude, loc.longitude)
+                exif.saveAttributes()
+                Log.d(TAG, "EXIF written OK: lat=${loc.latitude}, lon=${loc.longitude}, file=${file.absolutePath}")
+            } catch (e: Exception) {
+                Log.e(TAG, "EXIF write FAILED: ${e.message}", e)
+            }
+        } else {
+            Log.w(TAG, "No GPS location available, photo returned without EXIF")
+        }
+
+        // 返回URI给WebView
         filePathCallback?.onReceiveValue(arrayOf(uri))
         filePathCallback = null
         cameraPhotoUri = null

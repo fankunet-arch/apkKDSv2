@@ -105,4 +105,17 @@ class WebAppInterface(private val mainActivityRef: MainActivity) {
             }
         }
     }
+
+    /**
+     * 规范: 拍照取证接口
+     */
+    @JavascriptInterface
+    fun takeEvidencePhoto(successCallbackName: String, errorCallbackName: String) {
+        Log.d(TAG, "takeEvidencePhoto called. Callbacks: $successCallbackName, $errorCallbackName")
+
+        // 委托给 MainActivity 处理
+        mainActivityRef.runOnUiThread {
+            mainActivityRef.startEvidencePhotoActivity(successCallbackName, errorCallbackName)
+        }
+    }
 }

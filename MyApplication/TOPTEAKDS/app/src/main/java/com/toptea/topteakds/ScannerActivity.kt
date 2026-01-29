@@ -1,6 +1,6 @@
 /*
  * 文件名: app/src/main/java/com/toptea/topteakds/ScannerActivity.kt
- * 描述: 规范 4.2 和 7.2, 负责扫码 (已修改为使用前置摄像头)
+ * 描述: 规范 4.2 和 7.2, 负责扫码 (强制使用前置摄像头)
  */
 package com.toptea.topteakds
 
@@ -112,7 +112,8 @@ class ScannerActivity : AppCompatActivity() {
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
-                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { scannedData ->
+                // 传入共享的 barcodeScanner 避免资源泄漏
+                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer(barcodeScanner) { scannedData ->
                     // 规范 7.2: 扫描到第一个有效条码
                     if (!isScanProcessed) {
                         isScanProcessed = true
@@ -122,10 +123,7 @@ class ScannerActivity : AppCompatActivity() {
                 })
             }
 
-        // ========================================================
-        //  !!! 唯一的修改在这里 !!!
-        //  从 .DEFAULT_BACK_CAMERA 更改为 .DEFAULT_FRONT_CAMERA
-        // ========================================================
+        // 强制使用前置摄像头进行条码扫描
         val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
 
         try {
@@ -136,10 +134,10 @@ class ScannerActivity : AppCompatActivity() {
                 preview,
                 imageAnalysis
             )
+            Log.d("ScannerActivity", "Using front camera for scanning")
         } catch (e: Exception) {
-            // 如果设备没有前置摄像头, 这里会失败
-            Log.e("ScannerActivity", "Camera use case binding failed (Is front camera available?)", e)
-            returnError("Failed to bind front camera: ${e.message}")
+            Log.e("ScannerActivity", "Front camera binding failed", e)
+            returnError("Failed to initialize front camera: ${e.message}")
         }
     }
 
@@ -174,10 +172,12 @@ class ScannerActivity : AppCompatActivity() {
 
 /**
  * 规范 7.2: 使用 ML Kit Barcode Scanning 分析图像
+ * 注意: scanner 由外部传入并管理生命周期，避免资源泄漏
  */
-private class BarcodeAnalyzer(private val onBarcodeFound: (String) -> Unit) : ImageAnalysis.Analyzer {
-
-    private val scanner = BarcodeScanning.getClient()
+private class BarcodeAnalyzer(
+    private val scanner: BarcodeScanner,
+    private val onBarcodeFound: (String) -> Unit
+) : ImageAnalysis.Analyzer {
 
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {

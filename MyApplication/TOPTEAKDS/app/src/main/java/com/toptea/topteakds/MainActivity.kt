@@ -379,6 +379,95 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 加载通用错误页面，不显示URL信息
+     */
+    private fun loadErrorPage(view: WebView?) {
+        val errorHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>系统错误</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        margin: 0;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 20px;
+                    }
+                    .error-container {
+                        background: white;
+                        border-radius: 16px;
+                        padding: 40px;
+                        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+                        text-align: center;
+                        max-width: 400px;
+                        width: 100%;
+                    }
+                    .error-icon {
+                        font-size: 64px;
+                        margin-bottom: 20px;
+                    }
+                    h1 {
+                        color: #333;
+                        font-size: 24px;
+                        margin: 0 0 16px 0;
+                        font-weight: 600;
+                    }
+                    p {
+                        color: #666;
+                        font-size: 16px;
+                        line-height: 1.6;
+                        margin: 0 0 24px 0;
+                    }
+                    .retry-button {
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        border: none;
+                        padding: 14px 32px;
+                        border-radius: 8px;
+                        font-size: 16px;
+                        font-weight: 500;
+                        cursor: pointer;
+                        transition: transform 0.2s, box-shadow 0.2s;
+                        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+                    }
+                    .retry-button:active {
+                        transform: scale(0.98);
+                        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+                    }
+                    .tips {
+                        margin-top: 24px;
+                        padding-top: 24px;
+                        border-top: 1px solid #eee;
+                        font-size: 14px;
+                        color: #999;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="error-container">
+                    <div class="error-icon">⚠️</div>
+                    <h1>系统暂时无法访问</h1>
+                    <p>抱歉，系统当前无法连接。请检查您的网络连接后重试。</p>
+                    <button class="retry-button" onclick="location.reload()">重新加载</button>
+                    <div class="tips">
+                        如问题持续存在，请联系技术支持
+                    </div>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        view?.loadDataWithBaseURL(null, errorHtml, "text/html", "UTF-8", null)
+    }
+
+    /**
      * 规范 2.2: WebView 环境要求
      * 规范 3.1: 注入 JavaScript 对象
      */
@@ -401,7 +490,35 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                Log.i(TAG, "WebView page loaded: $url")
+                Log.i(TAG, "WebView page loaded")
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                errorCode: Int,
+                description: String?,
+                failingUrl: String?
+            ) {
+                super.onReceivedError(view, errorCode, description, failingUrl)
+                // 日志记录错误但不暴露URL
+                Log.e(TAG, "WebView error: code=$errorCode, description=$description")
+                // 加载自定义错误页面，不显示URL
+                loadErrorPage(view)
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+                errorResponse: android.webkit.WebResourceResponse?
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                // 只处理主页面的HTTP错误，忽略资源请求错误
+                if (request?.isForMainFrame == true) {
+                    val statusCode = errorResponse?.statusCode ?: 0
+                    Log.e(TAG, "WebView HTTP error: statusCode=$statusCode")
+                    // 加载自定义错误页面
+                    loadErrorPage(view)
+                }
             }
         }
 

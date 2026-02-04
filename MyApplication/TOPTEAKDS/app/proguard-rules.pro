@@ -12,6 +12,16 @@
 #   public *;
 #}
 
+# Keep WebAppInterface for JavaScript bridge
+-keepclassmembers class com.toptea.topteakds.WebAppInterface {
+   public *;
+}
+
+# Keep classes annotated with @JavascriptInterface
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
 # Uncomment this to preserve the line number information for
 # debugging stack traces.
 #-keepattributes SourceFile,LineNumberTable

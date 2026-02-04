@@ -2,17 +2,15 @@
  * 文件名: app/src/main/java/com/toptea/topteakds/MainActivity.kt
  * 描述: 规范 2.0, APK 的主入口和 WebView 容器
  */
-package com.toptea.topteakds // <-- 已修正
+package com.toptea.topteakds
 
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.location.Location
 import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaStore
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.ValueCallback
@@ -26,10 +24,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import androidx.exifinterface.media.ExifInterface
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import com.toptea.topteakds.databinding.ActivityMainBinding
 import org.json.JSONObject
 import java.io.File
@@ -42,7 +38,7 @@ class MainActivity : AppCompatActivity() {
 
     // POS/KDS 的 Web URL
     // TODO: 替换为你的 KDS 生产环境 URL
-    private val WEB_APP_URL = "https://store.toptea.es/kds/" // 示例 URL (请修改为 KDS URL)
+    private val WEB_APP_URL = "https://store.toptea.es/kds/"
 
     // 规范 4.2/5.2: 扫码回调
     private lateinit var scannerLauncher: ActivityResultLauncher<Intent>
@@ -60,12 +56,6 @@ class MainActivity : AppCompatActivity() {
     private var cameraPhotoFile: File? = null
     private lateinit var fileChooserCameraLauncher: ActivityResultLauncher<Intent>
     private lateinit var fileChooserGalleryLauncher: ActivityResultLauncher<Intent>
-
-    // GPS + 拍照并行状态：两者同时启动，都完成后才写EXIF并返回
-    private var gpsLocation: Location? = null  // GPS获取到的位置
-    private var gpsFinished = false            // GPS获取是否完成（成功或失败）
-    private var photoFinished = false          // 拍照是否完成
-    private var photoCancelled = false         // 拍照是否被取消
 
     // GPS 定位客户端
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -99,29 +89,15 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 规范 2.1: 启动时强制缓存清除
-     * 这是规范中的必达项
      */
     private fun clearWebViewCache() {
         Log.w(TAG, "--- Executing FORCE cache clear (Spec 2.1) ---")
         try {
-            // 1. 标准网页缓存
             webView.clearCache(true)
-            Log.d(TAG, "clearCache(true) done.")
-
-            // 2. Cookies
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()
-            Log.d(TAG, "removeAllCookies() done.")
-
-            // 3. 表单数据
             webView.clearFormData()
-            Log.d(TAG, "clearFormData() done.")
-
-            // 4. WebStorage (Local Storage, Session Storage) 和 IndexedDB
-            // 这是最彻底的方式：删除 webview 存储数据的目录
             deleteDir(File(filesDir.parentFile, "app_webview"))
-            Log.d(TAG, "WebStorage / IndexedDB (app_webview) directory deleted.")
-
         } catch (e: Exception) {
             Log.e(TAG, "Failed to clear WebView cache", e)
         }
@@ -140,8 +116,8 @@ class MainActivity : AppCompatActivity() {
             val coarseLocGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
 
             if (cameraGranted && (fineLocGranted || coarseLocGranted)) {
-                // 权限全部授权，并行启动GPS获取 + 打开相机
-                startGpsFetchAndCamera()
+                // 权限全部授权，启动相机
+                launchSystemCamera()
             } else {
                 Log.e(TAG, "Camera or Location permission denied")
                 filePathCallback?.onReceiveValue(null)
@@ -154,18 +130,15 @@ class MainActivity : AppCompatActivity() {
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode == Activity.RESULT_OK && cameraPhotoUri != null && cameraPhotoFile != null) {
-                // 拍照成功，标记完成
-                photoFinished = true
-                photoCancelled = false
-                Log.d(TAG, "Photo taken, photoFinished=true, gpsFinished=$gpsFinished")
-                tryWriteExifAndReturn()
+                // CameraX Activity saved the file with EXIF already.
+                filePathCallback?.onReceiveValue(arrayOf(cameraPhotoUri!!))
             } else {
-                // 用户取消
-                photoFinished = true
-                photoCancelled = true
-                Log.d(TAG, "Photo cancelled")
-                tryWriteExifAndReturn()
+                // User cancelled or error
+                filePathCallback?.onReceiveValue(null)
             }
+            filePathCallback = null
+            cameraPhotoUri = null
+            cameraPhotoFile = null
         }
 
         // 相册选择回调
@@ -217,7 +190,7 @@ class MainActivity : AppCompatActivity() {
         val coarseLocOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
         if (cameraOk && (fineLocOk || coarseLocOk)) {
-            startGpsFetchAndCamera()
+            launchSystemCamera()
         } else {
             cameraPermissionLauncher.launch(
                 arrayOf(
@@ -230,137 +203,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 核心：并行启动GPS获取和打开相机。
-     * 重置所有并行状态，然后同时启动两个操作。
-     * 两者都完成后 tryWriteExifAndReturn() 负责汇合。
-     */
-    private fun startGpsFetchAndCamera() {
-        // 重置并行状态
-        gpsLocation = null
-        gpsFinished = false
-        photoFinished = false
-        photoCancelled = false
-
-        // 并行操作1: 启动GPS获取（后台进行）
-        startGpsFetch()
-
-        // 并行操作2: 立即打开系统相机（用户零等待）
-        launchSystemCamera()
-    }
-
-    /**
-     * 启动GPS获取。先尝试 lastLocation（瞬时），再尝试 getCurrentLocation。
-     * 完成后设置 gpsFinished=true 并调用 tryWriteExifAndReturn()。
-     */
-    @SuppressLint("MissingPermission")
-    private fun startGpsFetch() {
-        Log.d(TAG, "GPS fetch started")
-
-        // 第一步：先尝试 lastLocation（瞬时返回，不需要等待硬件）
-        fusedLocationClient.lastLocation
-            .addOnSuccessListener { lastLoc ->
-                if (lastLoc != null) {
-                    // lastLocation 有值，直接使用
-                    Log.d(TAG, "GPS from lastLocation: lat=${lastLoc.latitude}, lon=${lastLoc.longitude}")
-                    gpsLocation = lastLoc
-                    gpsFinished = true
-                    tryWriteExifAndReturn()
-                } else {
-                    // lastLocation 为空，需要等 getCurrentLocation
-                    Log.d(TAG, "lastLocation is null, requesting getCurrentLocation...")
-                    fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                        .addOnSuccessListener { currentLoc ->
-                            if (currentLoc != null) {
-                                Log.d(TAG, "GPS from getCurrentLocation: lat=${currentLoc.latitude}, lon=${currentLoc.longitude}")
-                                gpsLocation = currentLoc
-                            } else {
-                                Log.w(TAG, "getCurrentLocation returned null")
-                            }
-                            gpsFinished = true
-                            tryWriteExifAndReturn()
-                        }
-                        .addOnFailureListener { e ->
-                            Log.e(TAG, "getCurrentLocation failed: ${e.message}")
-                            gpsFinished = true
-                            tryWriteExifAndReturn()
-                        }
-                }
-            }
-            .addOnFailureListener { e ->
-                Log.e(TAG, "lastLocation failed: ${e.message}")
-                // lastLocation 失败，也尝试 getCurrentLocation
-                fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                    .addOnSuccessListener { currentLoc ->
-                        if (currentLoc != null) {
-                            Log.d(TAG, "GPS from getCurrentLocation (fallback): lat=${currentLoc.latitude}, lon=${currentLoc.longitude}")
-                            gpsLocation = currentLoc
-                        }
-                        gpsFinished = true
-                        tryWriteExifAndReturn()
-                    }
-                    .addOnFailureListener { e2 ->
-                        Log.e(TAG, "getCurrentLocation also failed: ${e2.message}")
-                        gpsFinished = true
-                        tryWriteExifAndReturn()
-                    }
-            }
-    }
-
-    /**
-     * 汇合点：GPS获取和拍照两个并行操作都完成后，执行EXIF写入并返回结果。
-     * 任何一方未完成时直接返回，等另一方完成后再次调用。
-     */
-    private fun tryWriteExifAndReturn() {
-        // 两个操作必须都完成
-        if (!gpsFinished || !photoFinished) {
-            Log.d(TAG, "tryWriteExifAndReturn: waiting (gpsFinished=$gpsFinished, photoFinished=$photoFinished)")
-            return
-        }
-
-        Log.d(TAG, "tryWriteExifAndReturn: both finished. cancelled=$photoCancelled, gpsLocation=$gpsLocation")
-
-        // 拍照被取消
-        if (photoCancelled) {
-            filePathCallback?.onReceiveValue(null)
-            filePathCallback = null
-            cameraPhotoUri = null
-            cameraPhotoFile = null
-            return
-        }
-
-        val file = cameraPhotoFile
-        val uri = cameraPhotoUri
-
-        if (file == null || uri == null) {
-            filePathCallback?.onReceiveValue(null)
-            filePathCallback = null
-            return
-        }
-
-        // 写入GPS EXIF
-        val loc = gpsLocation
-        if (loc != null) {
-            try {
-                val exif = ExifInterface(file.absolutePath)
-                exif.setLatLong(loc.latitude, loc.longitude)
-                exif.saveAttributes()
-                Log.d(TAG, "EXIF written OK: lat=${loc.latitude}, lon=${loc.longitude}, file=${file.absolutePath}")
-            } catch (e: Exception) {
-                Log.e(TAG, "EXIF write FAILED: ${e.message}", e)
-            }
-        } else {
-            Log.w(TAG, "No GPS location available, photo returned without EXIF")
-        }
-
-        // 返回URI给WebView
-        filePathCallback?.onReceiveValue(arrayOf(uri))
-        filePathCallback = null
-        cameraPhotoUri = null
-        cameraPhotoFile = null
-    }
-
-    /**
-     * 打开系统相机拍照
+     * 打开系统相机拍照 (Now uses EvidencePhotoActivity with CameraX)
      */
     private fun launchSystemCamera() {
         val photoFile = createImageFile()
@@ -368,8 +211,10 @@ class MainActivity : AppCompatActivity() {
             cameraPhotoFile = photoFile
             val authority = "${applicationContext.packageName}.fileprovider"
             cameraPhotoUri = FileProvider.getUriForFile(this, authority, photoFile)
-            val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
+
+            // Use EvidencePhotoActivity (CameraX) instead of system camera
+            val cameraIntent = Intent(this, EvidencePhotoActivity::class.java).apply {
+                putExtra(EvidencePhotoActivity.EXTRA_OUTPUT_PATH, photoFile.absolutePath)
             }
             fileChooserCameraLauncher.launch(cameraIntent)
         } else {
@@ -392,7 +237,7 @@ class MainActivity : AppCompatActivity() {
         settings.databaseEnabled = true      // 允许 IndexedDB / WebSQL
         settings.mediaPlaybackRequiresUserGesture = false // 允许 KDS 自动播放提示音
 
-        // 允许混合内容 (如果你的 URL 是 HTTPS 但需要访问本地 IP 打印机)
+        // 允许混合内容
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
 
         // 规范 3.1: 注入 JS 对象
@@ -520,11 +365,9 @@ class MainActivity : AppCompatActivity() {
     fun runJsCallback(callbackName: String, vararg args: Any?) {
         if (callbackName.isEmpty()) return
 
-        // 将参数转义为 JS 字符串
-        // 注意: JSONObject.quote() 返回的字符串已经包含双引号，不需要再加引号
         val argsString = args.joinToString(",") { arg ->
             when (arg) {
-                is String -> JSONObject.quote(arg) // quote() 已返回带双引号的字符串
+                is String -> JSONObject.quote(arg)
                 is Number -> arg.toString()
                 is Boolean -> arg.toString()
                 null -> "null"
@@ -535,15 +378,11 @@ class MainActivity : AppCompatActivity() {
         val script = "javascript:try { window.$callbackName($argsString); } catch(e) { console.error('JS callback $callbackName failed:', e); }"
         Log.d(TAG, "Running JS Callback: $script")
 
-        // 必须在 UI 线程执行
         runOnUiThread {
             webView.evaluateJavascript(script, null)
         }
     }
 
-    /**
-     * 递归删除目录 (用于 clearWebViewCache)
-     */
     private fun deleteDir(dir: File?): Boolean {
         if (dir == null || !dir.exists()) return true
         if (dir.isDirectory) {
@@ -560,18 +399,12 @@ class MainActivity : AppCompatActivity() {
         return dir.delete()
     }
 
-    /**
-     * 使用 OnBackPressedCallback 替代已废弃的 onBackPressed()
-     * 兼容 Android 13+ (API 33+)
-     */
     private fun setupBackPressHandler() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                // 允许 WebView 后退
                 if (webView.canGoBack()) {
                     webView.goBack()
                 } else {
-                    // 禁用此回调以允许系统处理返回
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
                 }

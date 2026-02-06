@@ -1,32 +1,26 @@
 # TOPTEA KDS 系统设计说明书
 
-> **文档版本**: 1.0
+> **文档版本**: 2.0
 > **项目名称**: TOPTEA KDS (Kitchen Display System)
-> **包名**: `com.toptea.topteakds`
-> **生成日期**: 2026-02-06
 
 ---
 
 ## 目录
 
 1. [系统概述](#1-系统概述)
-2. [技术栈与依赖](#2-技术栈与依赖)
-3. [项目结构](#3-项目结构)
-4. [系统架构设计](#4-系统架构设计)
-5. [核心模块详细设计](#5-核心模块详细设计)
-   - 5.1 [MainActivity — WebView 容器与主入口](#51-mainactivity--webview-容器与主入口)
-   - 5.2 [WebAppInterface — JavaScript 桥接层](#52-webappinterface--javascript-桥接层)
-   - 5.3 [PrinterService — 打印服务](#53-printerservice--打印服务)
-   - 5.4 [ConfigManager — 配置管理器](#54-configmanager--配置管理器)
-   - 5.5 [ScannerActivity — 条码扫描](#55-scanneractivity--条码扫描)
-   - 5.6 [EvidencePhotoActivity — 取证拍照](#56-evidencephotoactivity--取证拍照)
-6. [数据流与交互时序](#6-数据流与交互时序)
-7. [权限模型](#7-权限模型)
-8. [UI 布局设计](#8-ui-布局设计)
-9. [构建配置](#9-构建配置)
-10. [安全设计](#10-安全设计)
-11. [待实现功能 (TODO)](#11-待实现功能-todo)
-12. [附录：文件清单](#12-附录文件清单)
+2. [系统架构设计](#2-系统架构设计)
+3. [核心功能模块设计](#3-核心功能模块设计)
+   - 3.1 [WebView 容器（主入口）](#31-webview-容器主入口)
+   - 3.2 [JavaScript Bridge 桥接层](#32-javascript-bridge-桥接层)
+   - 3.3 [打印服务](#33-打印服务)
+   - 3.4 [配置管理](#34-配置管理)
+   - 3.5 [条码扫描](#35-条码扫描)
+   - 3.6 [取证拍照](#36-取证拍照)
+4. [数据流与交互时序](#4-数据流与交互时序)
+5. [权限模型与安全设计](#5-权限模型与安全设计)
+6. [UI 交互设计](#6-ui-交互设计)
+7. [注意事项与设计约束](#7-注意事项与设计约束)
+8. [待实现功能](#8-待实现功能)
 
 ---
 
@@ -34,134 +28,43 @@
 
 ### 1.1 产品定位
 
-TOPTEA KDS 是一款面向餐饮行业的 **厨房显示系统 (Kitchen Display System)** Android 客户端应用。它作为一个 **WebView 容器壳 (Hybrid App)**，加载远程 Web 应用 (`https://store.toptea.es/kds/`)，同时通过 **JavaScript Bridge** 向 Web 端暴露原生 Android 硬件能力，包括：
+TOPTEA KDS 是一款面向餐饮行业的 **厨房显示系统 (Kitchen Display System)** Android 客户端。它采用 **Hybrid App（混合应用）** 架构，核心业务逻辑运行在远程 Web 端，Android 端作为一个"硬件能力壳"，通过 JavaScript Bridge 向 Web 端暴露以下原生能力：
 
-- 热敏打印机控制（Wi-Fi / 蓝牙 / USB）
-- 条码/二维码扫描（基于 CameraX + Google ML Kit）
-- 取证拍照（带 GPS 定位 EXIF 写入）
-- 打印机配置持久化
+- **热敏打印机控制** — 支持 ESC/POS（收据）和 TSPL（标签）两种协议
+- **条码/二维码扫描** — 基于摄像头实时图像分析
+- **取证拍照** — 带 GPS 定位信息写入照片 EXIF 元数据
+- **打印机配置持久化** — 本地保存打印机连接参数
 
 ### 1.2 核心设计理念
 
 | 设计原则 | 说明 |
 |---------|------|
-| **Hybrid 架构** | 业务逻辑全部运行在 Web 端，Android 端仅提供硬件桥接能力 |
-| **异步回调模型** | 所有 Native 操作通过 JavaScript 回调函数名传参，操作完成后通过 `evaluateJavascript` 回调 Web 端 |
-| **横屏锁定** | 所有 Activity 强制 `landscape` 方向，适配厨房显示器/平板场景 |
-| **强制缓存清除** | 每次启动时清除 WebView 缓存，确保加载最新版本的 Web 应用 |
+| **Hybrid 架构** | 业务逻辑全部运行在 Web 端（订单管理、菜品显示等），Android 端**不包含任何业务逻辑**，仅提供硬件桥接能力。这样做的好处是：Web 端升级不需要重新发布 APK |
+| **异步回调模型** | 所有 Native 操作均为异步。Web 端调用时传入"成功回调函数名"和"失败回调函数名"两个字符串，Native 操作完成后通过 `evaluateJavascript` 调用对应的全局函数 |
+| **横屏锁定** | 所有界面强制横屏显示，适配厨房大屏显示器和横向平板场景 |
+| **强制缓存清除** | 每次 APP 启动时强制清除 WebView 所有缓存（包括 Cookie、表单数据、本地存储目录），确保总是加载最新版本的 Web 应用。这是一个刻意的设计选择，牺牲启动速度换取"永远是最新版" |
 
 ### 1.3 目标运行环境
 
-| 参数 | 值 |
-|------|-----|
-| 最低 SDK | API 26 (Android 8.0) |
-| 目标 SDK | API 35 (Android 15) |
-| 编译 SDK | API 35 |
-| JVM Target | Java 11 |
-| 屏幕方向 | 强制横屏 (landscape) |
-| 目标设备 | 厨房平板电脑、Android POS 一体机 |
+- **目标设备**: 厨房平板电脑、Android POS 一体机
+- **屏幕方向**: 强制横屏 (landscape)
+- **网络要求**: 必须具备网络连接（加载远程 Web 应用）；打印机通信走内网
+- **硬件要求**: 必须具备摄像头（扫码和拍照功能依赖摄像头，应用声明了 `camera` 为必需硬件特性）
 
 ---
 
-## 2. 技术栈与依赖
+## 2. 系统架构设计
 
-### 2.1 构建工具
+### 2.1 三层架构
 
-| 工具 | 版本 |
-|------|------|
-| Android Gradle Plugin (AGP) | 8.8.0 |
-| Gradle Wrapper | 8.10.2 |
-| Kotlin | 2.0.0 |
-| Android Studio | Otter 2025.2.1 Patch 1 |
-
-### 2.2 核心依赖库
-
-| 分类 | 库名 | 版本 | 用途 |
-|------|------|------|------|
-| **Android 基础** | `androidx.core:core-ktx` | 1.15.0 | Kotlin 扩展函数 |
-| | `androidx.appcompat:appcompat` | 1.7.0 | 向后兼容的 Activity 基类 |
-| | `com.google.android.material:material` | 1.12.0 | Material Design 组件 |
-| | `androidx.activity:activity` | 1.9.3 | Activity Result API + Edge-to-Edge |
-| | `androidx.constraintlayout:constraintlayout` | 2.2.0 | 约束布局 |
-| **WebView** | `androidx.webkit:webkit` | 1.11.0 | WebView 增强组件 |
-| **协程** | `kotlinx-coroutines-core` | 1.8.0 | 协程核心库 |
-| | `kotlinx-coroutines-android` | 1.8.0 | Android 主线程调度器 |
-| **CameraX** | `camera-core` | 1.3.4 | 相机核心抽象 |
-| | `camera-camera2` | 1.3.4 | Camera2 实现 |
-| | `camera-lifecycle` | 1.3.4 | 生命周期绑定 |
-| | `camera-view` | 1.3.4 | PreviewView 控件 |
-| **ML Kit** | `barcode-scanning` | 17.2.0 | 条码/二维码识别 |
-| **定位** | `play-services-location` | 21.3.0 | GPS 高精度定位 |
-| **图像** | `androidx.exifinterface:exifinterface` | 1.3.7 | EXIF 元数据读写 |
-| **二维码** | `com.google.zxing:core` | 3.5.3 | ZXing 条码库核心 |
-
-### 2.3 版本目录 (Version Catalog)
-
-项目使用 Gradle Version Catalog (`gradle/libs.versions.toml`) 统一管理依赖版本，部分 CameraX、ML Kit 等依赖直接在 `build.gradle.kts` 中以硬编码版本声明。
-
----
-
-## 3. 项目结构
-
-```
-MyApplication/TOPTEAKDS/
-├── build.gradle.kts                     # 项目级构建脚本
-├── settings.gradle.kts                  # 项目设置（根项目名 + 模块声明）
-├── gradle.properties                    # Gradle 全局属性
-├── gradle/
-│   ├── libs.versions.toml               # 版本目录
-│   └── wrapper/
-│       └── gradle-wrapper.properties    # Gradle Wrapper 配置
-│
-└── app/
-    ├── build.gradle.kts                 # 模块级构建脚本
-    ├── proguard-rules.pro               # ProGuard 混淆规则
-    │
-    └── src/main/
-        ├── AndroidManifest.xml          # 应用清单
-        │
-        ├── java/com/toptea/topteakds/
-        │   ├── MainActivity.kt          # 主入口 + WebView 容器
-        │   ├── WebAppInterface.kt       # JS Bridge 接口类
-        │   ├── PrinterService.kt        # 打印服务（ESC/POS + TSPL）
-        │   ├── ConfigManager.kt         # 打印机配置持久化
-        │   ├── ScannerActivity.kt       # 条码扫描 Activity
-        │   └── EvidencePhotoActivity.kt # 取证拍照 Activity
-        │
-        └── res/
-            ├── layout/
-            │   ├── activity_main.xml           # 主界面（全屏 WebView）
-            │   ├── activity_scanner.xml        # 扫码界面（全屏预览）
-            │   └── activity_evidence_photo.xml # 拍照界面（预览+控件）
-            ├── drawable/
-            │   ├── ic_launcher_background.xml  # 启动图标背景
-            │   ├── ic_launcher_foreground.xml  # 启动图标前景
-            │   └── ic_shutter_button.xml       # 快门按钮图标
-            ├── values/
-            │   ├── colors.xml                  # 颜色资源
-            │   ├── strings.xml                 # 字符串资源
-            │   ├── themes.xml                  # 日间主题
-            │   └── ic_launcher_background.xml  # 图标背景色
-            ├── values-night/
-            │   └── themes.xml                  # 夜间主题
-            └── xml/
-                ├── file_paths.xml              # FileProvider 路径配置
-                ├── backup_rules.xml            # 备份规则 (API 31+)
-                └── data_extraction_rules.xml   # 数据提取规则
-```
-
----
-
-## 4. 系统架构设计
-
-### 4.1 整体架构图
+系统分为三个层次：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Web Application                              │
-│                  (https://store.toptea.es/kds/)                     │
+│                         Web 应用层                                   │
 │                                                                     │
-│   JavaScript 代码通过 window.AndroidBridge 调用原生功能              │
+│   所有业务逻辑（订单、菜品、厨房管理）在此层运行                       │
+│   通过 window.AndroidBridge 调用原生能力                             │
 │   ┌──────────────────────────────────────────────────────────────┐  │
 │   │  window.AndroidBridge.printJob(payload, onSuccess, onError) │  │
 │   │  window.AndroidBridge.startScan(onSuccess, onError)         │  │
@@ -169,242 +72,231 @@ MyApplication/TOPTEAKDS/
 │   │  window.AndroidBridge.takeEvidencePhoto(onSuccess, onError) │  │
 │   └──────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────┬──────────────────────────────────────┘
-                               │ @JavascriptInterface
+                               │ JavaScript Bridge
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     Android Native Layer                            │
+│                     Android Native 层                               │
 │                                                                     │
 │  ┌─────────────────┐    ┌──────────────────┐    ┌───────────────┐  │
-│  │  MainActivity   │◄──►│ WebAppInterface  │◄──►│ PrinterService│  │
-│  │  (WebView 容器) │    │  (JS Bridge)     │    │ (ESC/POS/TSPL)│  │
+│  │  WebView 容器   │◄──►│  JS Bridge 接口  │◄──►│   打印服务    │  │
+│  │  (主入口)       │    │  (4个公开方法)    │    │ (ESC/POS+TSPL)│  │
 │  └────────┬────────┘    └──────────────────┘    └───────┬───────┘  │
 │           │                                              │          │
-│           │ startActivityForResult                       │          │
+│           │ Activity 跳转                                │          │
 │           ▼                                              ▼          │
 │  ┌─────────────────┐    ┌──────────────────┐    ┌───────────────┐  │
-│  │ ScannerActivity │    │EvidencePhotoAct. │    │ ConfigManager │  │
-│  │ (CameraX+MLKit) │    │(CameraX+GPS+EXIF)│    │(SharedPrefs)  │  │
+│  │   条码扫描      │    │    取证拍照      │    │   配置管理    │  │
+│  │ (前置摄像头)    │    │(后置摄像头+GPS)  │    │(本地持久化)   │  │
 │  └─────────────────┘    └──────────────────┘    └───────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      Hardware Layer                                 │
+│                        硬件层                                       │
 │                                                                     │
-│   ┌──────────┐  ┌───────────┐  ┌──────┐  ┌──────┐  ┌───────────┐  │
-│   │ 热敏打印机│  │ 前置摄像头 │  │后置  │  │ GPS  │  │ 蓝牙模块  │  │
-│   │(WiFi:9100)│  │ (扫码用)  │  │摄像头│  │模块  │  │ (待实现)  │  │
-│   └──────────┘  └───────────┘  └──────┘  └──────┘  └───────────┘  │
+│    热敏打印机(WiFi)    前置摄像头    后置摄像头    GPS    蓝牙模块   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 通信模型
+### 2.2 通信模型
 
-系统采用 **异步回调 (Asynchronous Callback)** 通信模型：
+Web 与 Native 之间采用**异步回调函数名**通信模型：
 
+**调用方向（Web → Native）**:
 ```
-Web → Native:  window.AndroidBridge.method(data, "onSuccessFnName", "onErrorFnName")
-Native → Web:  webView.evaluateJavascript("window.onSuccessFnName(result)")
+window.AndroidBridge.方法名(数据, "成功回调函数名", "失败回调函数名")
 ```
 
-**关键设计**：
-- Web 端传递的不是函数引用，而是**全局函数名字符串**
-- Native 端通过 `JSONObject.quote()` 安全转义参数
-- 所有回调在 UI 线程通过 `runOnUiThread` 执行
+**回调方向（Native → Web）**:
+```
+webView.evaluateJavascript("window.成功回调函数名(参数)")
+```
+
+**关键设计决策**：
+- Web 端传递的是**全局函数名的字符串**，而非函数引用。这是因为 `@JavascriptInterface` 注解的方法只能接收基本类型参数（String、int、boolean 等），不能接收 JavaScript 函数对象
+- Native 端通过 `JSONObject.quote()` 对回调参数进行安全转义，防止引号等特殊字符破坏 JS 语法
+- 所有 JS 回调必须通过 `runOnUiThread` 在主线程执行，因为 `evaluateJavascript` 必须在 UI 线程调用
+- 回调使用 `try-catch` 包裹，防止 Web 端函数不存在时崩溃
+
+### 2.3 线程模型
+
+| 操作类型 | 运行线程 | 原因 |
+|----------|----------|------|
+| `@JavascriptInterface` 方法 | WebView Binder 线程 | Android WebView 机制决定 |
+| 启动 Activity（扫码/拍照） | UI 线程 | Android 要求 |
+| Socket 打印、配置读写 | IO 协程 | 避免阻塞 UI |
+| JS 回调 (`evaluateJavascript`) | UI 线程 | Android WebView 要求 |
+
+> **注意**: `@JavascriptInterface` 方法不运行在 UI 线程上，这是一个常见误解。必须根据操作类型手动切换到正确线程。
 
 ---
 
-## 5. 核心模块详细设计
+## 3. 核心功能模块设计
 
-### 5.1 MainActivity — WebView 容器与主入口
+### 3.1 WebView 容器（主入口）
 
-**文件**: `app/src/main/java/com/toptea/topteakds/MainActivity.kt`
-**职责**: 应用主入口，作为 WebView 容器加载远程 KDS Web 应用
+#### 功能描述
 
-#### 5.1.1 类图
+作为整个应用的主入口，承载一个全屏 WebView，加载远程 KDS Web 应用。负责协调所有子功能模块的启动和回调。
 
-```
-MainActivity : AppCompatActivity
-├── 属性
-│   ├── binding: ActivityMainBinding          # ViewBinding 实例
-│   ├── webView: WebView                     # WebView 控件引用
-│   ├── WEB_APP_URL: String                  # KDS Web 应用 URL
-│   ├── scannerLauncher: ActivityResultLauncher    # 扫码结果接收器
-│   ├── scanSuccessCallback: String?         # 扫码成功回调函数名
-│   ├── scanErrorCallback: String?           # 扫码失败回调函数名
-│   ├── evidencePhotoLauncher: ActivityResultLauncher  # 拍照结果接收器
-│   ├── evidenceSuccessCallback: String?     # 拍照成功回调函数名
-│   ├── evidenceErrorCallback: String?       # 拍照失败回调函数名
-│   ├── filePathCallback: ValueCallback<Array<Uri>>?  # WebView 文件选择回调
-│   ├── cameraPhotoUri: Uri?                 # 相机拍照 URI
-│   ├── cameraPhotoFile: File?               # 相机拍照文件
-│   ├── fusedLocationClient: FusedLocationProviderClient  # GPS 客户端
-│   └── cameraPermissionLauncher: ActivityResultLauncher  # 权限请求器
-│
-├── 生命周期方法
-│   └── onCreate()                           # 初始化所有组件
-│
-├── WebView 相关
-│   ├── clearWebViewCache()                  # 强制清除缓存（规范 2.1）
-│   ├── setupWebView()                       # 配置 WebView 环境（规范 2.2）
-│   └── loadErrorPage(view)                  # 加载自定义错误页面
-│
-├── 扫码相关
-│   ├── setupScannerLauncher()               # 注册扫码结果回调
-│   └── startScanActivity(success, error)    # 启动扫码 Activity
-│
-├── 拍照相关
-│   ├── setupEvidencePhotoLauncher()         # 注册拍照结果回调
-│   ├── startEvidencePhotoActivity(s, e)     # 启动拍照 Activity
-│   ├── setupFileChooserLaunchers()          # WebView <input type="file"> 支持
-│   ├── checkPermissionsAndCapture()         # 检查相机+GPS权限
-│   ├── launchSystemCamera()                 # 打开 CameraX 拍照
-│   └── createImageFile()                    # 创建临时照片文件
-│
-├── JS 回调
-│   └── runJsCallback(callbackName, args)    # 执行 JS 回调函数（规范 5.1）
-│
-└── 工具方法
-    ├── deleteDir(dir)                       # 递归删除目录
-    └── setupBackPressHandler()              # 返回键处理（WebView 历史）
-```
+#### WebView 环境配置
 
-#### 5.1.2 WebView 配置详情
+| 配置项 | 设定值 | 设计原因 |
+|--------|--------|----------|
+| JavaScript | 开启 | Web 应用依赖 JavaScript 运行 |
+| DOM Storage | 开启 | Web 应用需要使用 LocalStorage / SessionStorage 存储会话数据 |
+| 数据库 | 开启 | Web 应用可能使用 IndexedDB 缓存离线数据 |
+| 媒体自动播放 | 开启 | KDS 需要在新订单到达时**自动播放提示音**，不能要求用户手动触发 |
+| 混合内容模式 | 全部允许 | Web 应用的 HTTPS 页面可能嵌入了 HTTP 资源（如内网图片） |
 
-| 配置项 | 值 | 原因 |
-|--------|-----|------|
-| `javaScriptEnabled` | `true` | Web 应用依赖 JavaScript |
-| `domStorageEnabled` | `true` | 允许 LocalStorage/SessionStorage |
-| `databaseEnabled` | `true` | 允许 IndexedDB/WebSQL |
-| `mediaPlaybackRequiresUserGesture` | `false` | KDS 自动播放订单提示音 |
-| `mixedContentMode` | `ALWAYS_ALLOW` | 允许 HTTPS 页面加载 HTTP 资源 |
+#### 缓存清除策略
 
-#### 5.1.3 缓存清除策略
+**每次启动时**（`onCreate` 阶段、加载 URL 之前）强制执行以下 5 步清除：
 
-每次 `onCreate` 时执行以下清除操作（在 `loadUrl` 之前）：
-1. `webView.clearCache(true)` — 清除 WebView 内部缓存
-2. `CookieManager.removeAllCookies(null)` — 清除所有 Cookie
-3. `CookieManager.flush()` — 刷新 Cookie 管理器
-4. `webView.clearFormData()` — 清除表单数据
-5. `deleteDir(app_webview)` — 递归删除 WebView 数据目录
+1. 清除 WebView 内部缓存（包括磁盘和内存缓存）
+2. 清除所有 Cookie
+3. 刷新 Cookie 管理器（确保清除写入磁盘）
+4. 清除表单自动填充数据
+5. 递归删除 `app_webview` 目录（WebView 的私有数据目录）
 
-#### 5.1.4 错误处理
+> **注意**: 这意味着用户每次打开 APP 都需要重新加载全部 Web 资源。这是故意设计——KDS 场景下"总是最新"比"快速启动"更重要。如果未来需要优化启动速度，可以改为只清除特定缓存。
 
-当 WebView 加载失败时（网络错误或 HTTP 错误），显示一个自定义的内联 HTML 错误页面，包含：
-- 渐变背景的卡片式布局
-- 中文提示信息 "系统暂时无法访问"
-- "重新加载" 按钮 (`location.reload()`)
-- **不暴露具体 URL 信息**（安全考虑）
+#### 错误处理
 
-#### 5.1.5 `<input type="file">` 支持
+当 WebView 加载失败时（无论是网络错误还是 HTTP 错误），系统会显示一个内联的 HTML 错误页面：
 
-WebView 的 `WebChromeClient.onShowFileChooser` 被重写以支持两种模式：
+- 显示"系统暂时无法访问"的友好提示
+- 提供"重新加载"按钮
+- **关键安全设计**: 错误页面**不暴露任何 URL 信息**（内网地址属于敏感信息），只在 Android Log 中记录 errorCode 和 description
+- 仅对主页面的 HTTP 错误做处理，忽略子资源（图片、CSS等）的加载错误
 
-| 模式 | 触发条件 | 行为 |
-|------|----------|------|
-| **拍照模式** | `fileChooserParams.isCaptureEnabled == true` | 检查权限 → 启动 EvidencePhotoActivity |
-| **相册模式** | `isCaptureEnabled == false` | 打开系统文件选择器（支持多选） |
+#### `<input type="file">` 支持
 
-#### 5.1.6 返回键处理
+Web 页面中的文件上传表单会触发两种不同行为：
 
-通过 `OnBackPressedCallback` 实现：
-- 如果 WebView 有浏览历史 → `webView.goBack()`
-- 如果没有历史 → 正常退出行为
+| 触发场景 | 行为 |
+|----------|------|
+| HTML 中 `<input type="file" capture>` | 启动 CameraX 拍照界面（取证拍照模块），自动写入 GPS EXIF |
+| HTML 中 `<input type="file">` （无 capture） | 打开系统相册/文件选择器，支持多文件选择 |
+
+> **注意**: 在上一次文件选择回调尚未完成时，如果触发新的选择操作，系统会先取消上一次的回调（传入 null），再启动新的选择流程。
+
+#### 返回键行为
+
+- 如果 WebView 有浏览历史 → 后退到上一页
+- 如果 WebView 没有历史 → 正常退出应用
 
 ---
 
-### 5.2 WebAppInterface — JavaScript 桥接层
+### 3.2 JavaScript Bridge 桥接层
 
-**文件**: `app/src/main/java/com/toptea/topteakds/WebAppInterface.kt`
-**注入名称**: `window.AndroidBridge`
-**职责**: 作为 Web 端与 Native 端的通信桥梁，暴露 4 个核心接口
+#### 功能描述
 
-#### 5.2.1 接口列表
+通过 `@JavascriptInterface` 注解将一个对象注入 WebView 的 JavaScript 全局作用域，名称为 `window.AndroidBridge`。Web 端通过这个对象调用 4 个原生能力。
 
-| 方法签名 | 线程模型 | 功能描述 |
-|----------|----------|----------|
-| `printJob(jsonPayload, successCb, errorCb)` | `Dispatchers.IO` 协程 | 解析打印负载，委托 PrinterService 执行 |
-| `startScan(successCb, errorCb)` | `runOnUiThread` | 启动 ScannerActivity |
-| `savePrinterConfig(type, ip, port, mac, successCb, errorCb)` | `Dispatchers.IO` 协程 | 保存打印机配置到 SharedPreferences |
-| `takeEvidencePhoto(successCb, errorCb)` | `runOnUiThread` | 启动 EvidencePhotoActivity |
+#### 公开接口
 
-#### 5.2.2 线程安全设计
+**接口 1 — 打印 (`printJob`)**
 
 ```
-@JavascriptInterface 方法运行在 WebView 的 Binder 线程上，而非 UI 线程。
-因此：
-  - 需要 UI 操作的（启动 Activity）→ 使用 runOnUiThread {}
-  - 需要 I/O 操作的（打印、保存配置）→ 使用 CoroutineScope(Dispatchers.IO) 协程
-  - 回调 JS 的 → 通过 MainActivity.runJsCallback() 在 UI 线程执行
+window.AndroidBridge.printJob(jsonPayloadString, successCallbackName, errorCallbackName)
 ```
 
-#### 5.2.3 回调机制详解
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `jsonPayloadString` | String | JSON 格式的打印指令（含纸张尺寸和指令数组） |
+| `successCallbackName` | String | 打印成功后调用的全局 JS 函数名 |
+| `errorCallbackName` | String | 打印失败时调用的全局 JS 函数名，参数为错误消息 |
 
-```kotlin
-// 回调执行流程:
-// 1. Web 调用:  AndroidBridge.printJob(data, "onPrintOK", "onPrintFail")
-// 2. Native 执行打印任务
-// 3. 成功时:    evaluateJavascript("window.onPrintOK()")
-// 4. 失败时:    evaluateJavascript("window.onPrintFail('错误信息')")
-```
-
-参数序列化规则（`runJsCallback` 方法）：
-
-| 参数类型 | 序列化方式 |
-|----------|-----------|
-| `String` | `JSONObject.quote(arg)` — 安全转义引号等特殊字符 |
-| `Number` | `arg.toString()` — 直接转字符串 |
-| `Boolean` | `arg.toString()` — `true` / `false` |
-| `null` | 字面量 `"null"` |
-| 其他 | `JSONObject.quote(arg.toString())` |
+- 在 IO 协程中执行，不阻塞 WebView
+- 委托给打印服务模块处理
 
 ---
 
-### 5.3 PrinterService — 打印服务
-
-**文件**: `app/src/main/java/com/toptea/topteakds/PrinterService.kt`
-**类型**: `object` 单例
-**职责**: 接收 JSON 打印指令，连接打印机，发送 ESC/POS 或 TSPL 指令流
-
-#### 5.3.1 打印流程
+**接口 2 — 扫码 (`startScan`)**
 
 ```
-executePrint(context, jsonPayloadString)
-    │
-    ├── 1. 读取打印机配置 (ConfigManager.loadConfig)
-    │
-    ├── 2. 解析 JSON 负载
-    │   ├── size: "58mm" | "80mm" | "50x30 mm"
-    │   └── commands: JSONArray
-    │
-    ├── 3. 判断打印模式
-    │   ├── 包含 "x" → TSPL 标签模式
-    │   └── 不包含 "x" → ESC/POS 收据模式
-    │
-    ├── 4. 建立连接
-    │   ├── WIFI → Socket(ip, port)
-    │   ├── BLUETOOTH → [未实现]
-    │   └── USB → [未实现]
-    │
-    ├── 5. 发送初始化指令
-    │   ├── TSPL: "SIZE W mm, H mm\n" + "GAP 2 mm, 0 mm\n" + "CLS\n"
-    │   └── ESC/POS: 0x1B 0x40 (ESC @)
-    │
-    ├── 6. 循环执行指令 (commands[])
-    │   ├── "text"    → 文本输出
-    │   ├── "kv"      → 键值对输出
-    │   ├── "divider" → 分隔线
-    │   ├── "feed"    → 走纸
-    │   └── "cut"     → 切刀 (仅 ESC/POS)
-    │
-    ├── 7. 发送结束指令
-    │   ├── TSPL: "PRINT 1,1\n"
-    │   └── ESC/POS: 走纸 + 切刀
-    │
-    └── 8. 关闭连接 (finally)
+window.AndroidBridge.startScan(successCallbackName, errorCallbackName)
 ```
 
-#### 5.3.2 JSON 打印负载格式
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `successCallbackName` | String | 扫码成功后调用的全局 JS 函数名，参数为条码文本 |
+| `errorCallbackName` | String | 扫码失败/取消时调用的全局 JS 函数名，参数为错误消息 |
+
+- 在 UI 线程启动扫码 Activity
+- 扫到第一个有效条码后自动返回结果
+
+---
+
+**接口 3 — 保存打印机配置 (`savePrinterConfig`)**
+
+```
+window.AndroidBridge.savePrinterConfig(type, ip, port, macAddress, successCallbackName, errorCallbackName)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `type` | String | 连接类型：`"WIFI"` / `"BLUETOOTH"` / `"USB"` |
+| `ip` | String | 打印机 IP 地址（WiFi 模式使用） |
+| `port` | int | 打印端口号（WiFi 模式使用，一般为 9100） |
+| `macAddress` | String | 蓝牙 MAC 地址（蓝牙模式使用） |
+| `successCallbackName` | String | 保存成功回调函数名 |
+| `errorCallbackName` | String | 保存失败回调函数名 |
+
+- 配置保存到设备本地（SharedPreferences），断电不丢失
+- 在 IO 协程中执行
+
+---
+
+**接口 4 — 取证拍照 (`takeEvidencePhoto`)**
+
+```
+window.AndroidBridge.takeEvidencePhoto(successCallbackName, errorCallbackName)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `successCallbackName` | String | 拍照成功回调函数名，参数为 Base64 编码的 JPEG |
+| `errorCallbackName` | String | 拍照失败/取消回调函数名，参数为错误消息 |
+
+- 在 UI 线程启动拍照 Activity
+- 拍出的照片自动嵌入 GPS 经纬度、时间戳、设备信息到 EXIF
+- 返回 Base64 编码的 JPEG 字符串
+
+#### 回调参数序列化规则
+
+Native 向 Web 回调时，参数按以下规则序列化为 JS 代码：
+
+| 参数类型 | 序列化方式 | 示例 |
+|----------|-----------|------|
+| String | `JSONObject.quote()` 安全转义 | `"hello \"world\""` |
+| Number | 直接 `toString()` | `42` |
+| Boolean | 直接 `toString()` | `true` |
+| null | 字面量 `null` | `null` |
+
+> **注意**: 必须使用 `JSONObject.quote()` 而非手动拼接引号，否则当字符串包含引号、换行等特殊字符时会导致 JS 语法错误或注入漏洞。
+
+---
+
+### 3.3 打印服务
+
+#### 功能描述
+
+接收 JSON 格式的打印指令，自动判断打印协议（ESC/POS 或 TSPL），建立与打印机的连接，将指令翻译为对应协议的字节流并发送。
+
+#### 双协议设计
+
+系统根据 JSON 负载中的 `size` 字段自动判断打印协议：
+
+| 纸张尺寸格式 | 协议 | 场景 |
+|-------------|------|------|
+| `"58mm"` 或 `"80mm"` | **ESC/POS** | 热敏收据打印 |
+| `"50x30 mm"` （包含 `x`） | **TSPL** | 标签/条码打印 |
+
+判断规则很简单：`size` 字段中包含字母 `x` → TSPL 模式，否则 → ESC/POS 模式。
+
+#### JSON 打印负载格式
 
 ```json
 {
@@ -421,576 +313,413 @@ executePrint(context, jsonPayloadString)
 }
 ```
 
-#### 5.3.3 支持的指令类型
+#### 支持的打印指令
 
-| 指令类型 | 字段 | ESC/POS 行为 | TSPL 行为 |
-|----------|------|-------------|-----------|
-| `text` | `value` | GBK 编码文本输出 + 换行 | `TEXT x,y,"TSS24.BF2",0,1,1,"value"` |
-| `kv` | `key`, `value` | `key: value\n` GBK 编码 | `TEXT x,y,"TSS24.BF2",0,1,1,"key: value"` |
-| `divider` | `char` (默认 `-`) | 重复字符填充（58mm=32列, 80mm=48列） | 未实现 (TODO) |
-| `feed` | `lines` (默认 1) | 输出 N 个换行符 | 不单独使用 |
-| `cut` | 无 | `0x1D 0x56 0x01` (GS V 1 全切) | 不适用 |
+| 指令类型 | 必要字段 | ESC/POS 行为 | TSPL 行为 |
+|----------|----------|-------------|-----------|
+| `text` | `value` | 以 GBK 编码输出文本 + 换行 | 在标签指定坐标输出中文文本 |
+| `kv` | `key`, `value` | 输出 `key: value` 格式的键值对 | 同上，拼接为 `key: value` |
+| `divider` | `char`（可选，默认 `-`） | 用指定字符填满一行（58mm=32列, 80mm=48列） | 暂未实现 |
+| `feed` | `lines`（可选，默认 1） | 输出 N 个空行（走纸） | TSPL 不单独走纸 |
+| `cut` | 无 | 发送全切指令 (GS V 1) | 不适用 |
 
-#### 5.3.4 连接类型
+#### 打印执行流程
 
-| 类型 | 状态 | 连接方式 |
-|------|------|----------|
-| **WIFI** | 已实现 | `Socket(ip, port)` — 默认端口 9100 |
-| **BLUETOOTH** | 未实现 | 需使用厂商 BT SDK + MAC 地址 |
+```
+1. 读取本地保存的打印机配置（连接类型、IP、端口）
+2. 解析 JSON 负载，提取纸张尺寸和指令数组
+3. 判断打印模式（ESC/POS 或 TSPL）
+4. 建立连接（目前仅支持 WiFi Socket 连接）
+5. 发送初始化指令
+   - ESC/POS: ESC @ (复位打印机)
+   - TSPL: SIZE + GAP + CLS (设置标签尺寸、间隙、清屏)
+6. 逐条执行打印指令
+7. 发送结束指令
+   - ESC/POS: 额外走纸 + 最终切刀
+   - TSPL: PRINT 1,1（打印一张）
+8. 关闭连接（无论成功失败都在 finally 中执行）
+```
+
+#### 连接方式
+
+| 连接类型 | 实现状态 | 连接方式 |
+|----------|---------|----------|
+| **WiFi** | 已实现 | 通过 TCP Socket 连接到打印机 IP:Port（默认端口 9100） |
+| **蓝牙** | 未实现 | 需使用蓝牙 MAC 地址 + 厂商 SDK |
 | **USB** | 未实现 | 需使用厂商 USB SDK |
 
-#### 5.3.5 字符编码
+#### 字符编码
 
-- ESC/POS 模式下文本使用 **GBK 编码** (`charset("GBK")`)，适配中文热敏打印机
-- TSPL 模式下使用字体 `TSS24.BF2`（繁体/简体中文 24 点阵）
+- ESC/POS 模式: 文本使用 **GBK 编码**，这是中文热敏打印机的标准编码
+- TSPL 模式: 使用字体 **TSS24.BF2**（简繁中文 24 点阵位图字体）
 
----
-
-### 5.4 ConfigManager — 配置管理器
-
-**文件**: `app/src/main/java/com/toptea/topteakds/ConfigManager.kt`
-**类型**: `object` 单例
-**存储方式**: `SharedPreferences` (文件名: `TopTeaPrinterConfig`)
-
-#### 5.4.1 数据模型
-
-```kotlin
-data class PrinterConfig(
-    val type: String,       // "WIFI" | "BLUETOOTH" | "USB"
-    val ip: String,         // 打印机 IP 地址（WIFI 模式用）
-    val port: Int,          // 端口号（默认 9100）
-    val macAddress: String  // 蓝牙 MAC 地址（BLUETOOTH 模式用）
-)
-```
-
-#### 5.4.2 SharedPreferences 键值表
-
-| 键 (Key) | 类型 | 默认值 | 说明 |
-|----------|------|--------|------|
-| `PRINTER_TYPE` | String | `"WIFI"` | 打印机连接类型 |
-| `PRINTER_IP` | String | `""` | 打印机 IP |
-| `PRINTER_PORT` | Int | `9100` | 打印端口 |
-| `PRINTER_MAC` | String | `""` | 蓝牙 MAC 地址 |
-
-#### 5.4.3 接口
-
-| 方法 | 描述 |
-|------|------|
-| `saveConfig(context, type, ip, port, macAddress)` | 保存配置（异步 `apply()`） |
-| `loadConfig(context): PrinterConfig` | 读取配置（同步） |
+> **注意**: 如果打印出乱码，首先检查打印机是否支持 GBK 编码。部分东南亚/欧美打印机可能需要 UTF-8 编码或 Big5 编码。
 
 ---
 
-### 5.5 ScannerActivity — 条码扫描
+### 3.4 配置管理
 
-**文件**: `app/src/main/java/com/toptea/topteakds/ScannerActivity.kt`
-**职责**: 使用前置摄像头实时扫描条码/二维码
+#### 功能描述
 
-#### 5.5.1 技术方案
+负责持久化保存和读取打印机连接配置。使用 Android 的 SharedPreferences 机制，数据保存在设备本地，APP 卸载后数据会被清除。
 
-| 组件 | 库/API | 作用 |
-|------|--------|------|
-| 相机预览 | CameraX `Preview` + `PreviewView` | 实时摄像头画面 |
-| 图像分析 | CameraX `ImageAnalysis` | 逐帧图像分析 |
-| 条码识别 | Google ML Kit `BarcodeScanning` | 条码/二维码解码 |
+#### 数据模型
 
-#### 5.5.2 相机选择
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `type` | String | `"WIFI"` | 连接类型：`WIFI` / `BLUETOOTH` / `USB` |
+| `ip` | String | `""` (空) | 打印机 IP 地址（WiFi 模式使用） |
+| `port` | int | `9100` | 打印端口号 |
+| `macAddress` | String | `""` (空) | 蓝牙 MAC 地址（蓝牙模式使用） |
 
-- **强制使用前置摄像头** (`CameraSelector.DEFAULT_FRONT_CAMERA`)
-- 设计意图：KDS 平板通常面朝操作员，前置摄像头朝向顾客/扫码区域
+#### 接口说明
 
-#### 5.5.3 扫描流程
-
-```
-onCreate()
-    │
-    ├── checkCameraPermission()
-    │   ├── 已授权 → startCamera()
-    │   └── 未授权 → requestCameraPermission()
-    │
-    └── startCamera()
-        │
-        ├── 初始化 CameraExecutor (单线程池)
-        ├── 获取 ProcessCameraProvider
-        │
-        └── bindCameraUseCases()
-            │
-            ├── Preview → surfaceProvider
-            │
-            └── ImageAnalysis → BarcodeAnalyzer
-                │
-                └── analyze(imageProxy)
-                    │
-                    ├── InputImage.fromMediaImage()
-                    ├── scanner.process(image)
-                    │
-                    ├── 成功 → barcodes.firstOrNull()
-                    │   └── onBarcodeFound(rawValue)
-                    │       └── returnSuccess(data)
-                    │           └── setResult(RESULT_OK) + finish()
-                    │
-                    └── 完成 → imageProxy.close()
-```
-
-#### 5.5.4 BarcodeAnalyzer 内部类
-
-- 实现 `ImageAnalysis.Analyzer` 接口
-- 使用 `@ExperimentalGetImage` 注解访问底层 Image
-- 将 `ImageProxy` 转换为 `InputImage` 并传递给 ML Kit
-- 通过 `isScanProcessed` 标志确保只返回一次结果
-- `BarcodeScanner` 实例由外部传入，在 `ScannerActivity.onDestroy()` 中关闭
-
-#### 5.5.5 返回值
-
-| 结果 | Extra Key | 数据 |
-|------|-----------|------|
-| 成功 | `scannedData` | 条码原始文本 (`rawValue`) |
-| 失败/取消 | `errorMessage` | 错误描述字符串 |
-
----
-
-### 5.6 EvidencePhotoActivity — 取证拍照
-
-**文件**: `app/src/main/java/com/toptea/topteakds/EvidencePhotoActivity.kt`
-**职责**: 使用后置摄像头拍照，附带 GPS 定位信息写入 EXIF 元数据
-
-#### 5.6.1 设计要点
-
-| 特性 | 说明 |
-|------|------|
-| **GPS 强制模式** | 必须获取到 GPS 定位后才允许拍照（`currentLocation == null` 时禁止拍照） |
-| **双重 EXIF 写入** | CameraX `Metadata.location` + 手动 `forceWriteExif()` 双保险 |
-| **EXIF 验证** | 拍照后立即验证 EXIF 中的 GPS 坐标是否成功写入 |
-| **双返回模式** | 文件路径模式（WebView 文件选择器用）/ Base64 模式（JS Bridge 用） |
-
-#### 5.6.2 GPS 获取策略
-
-```
-startGps()
-    │
-    ├── 1. getCurrentLocation(PRIORITY_HIGH_ACCURACY)
-    │   ├── 成功 → GPS: Locked (绿色)
-    │   └── 返回 null
-    │       │
-    │       └── 2. fusedLocationClient.lastLocation
-    │           ├── 成功 → GPS: Last Known (黄色)
-    │           └── 失败 → GPS: Unavailable (红色)
-    │
-    └── 失败 → GPS: Error (红色)
-```
-
-#### 5.6.3 EXIF 写入内容
-
-`forceWriteExif()` 方法向照片写入以下 EXIF 标签：
-
-| EXIF 标签 | 内容 |
-|-----------|------|
-| GPS 经纬度 | `exif.setLatLong(lat, lon)` |
-| GPS 海拔 | `exif.setAltitude(alt)` (如可用) |
-| `TAG_DATETIME` | 当前时间 (`yyyy:MM:dd HH:mm:ss`) |
-| `TAG_DATETIME_ORIGINAL` | 同上 |
-| `TAG_DATETIME_DIGITIZED` | 同上 |
-| `TAG_MAKE` | `"Google"` |
-| `TAG_MODEL` | `"TopTeaKDS"` |
-| `TAG_SOFTWARE` | `"TopTeaKDS App"` |
-| `TAG_OFFSET_TIME` | 时区偏移 (如 `+08:00`) |
-| `TAG_OFFSET_TIME_ORIGINAL` | 同上 |
-| `TAG_OFFSET_TIME_DIGITIZED` | 同上 |
-
-#### 5.6.4 拍照流程
-
-```
-takePhoto()
-    │
-    ├── 检查 currentLocation != null
-    │   └── null → Toast提示 + 重新获取GPS → 中断
-    │
-    ├── setLoading(true)
-    │
-    ├── 创建输出文件
-    │   ├── 有 EXTRA_OUTPUT_PATH → 使用指定路径
-    │   └── 无 → 创建临时文件
-    │
-    ├── 设置 ImageCapture.Metadata.location
-    │
-    └── imageCapture.takePicture()
-        │
-        ├── onError → setLoading(false) + returnError()
-        │
-        └── onImageSaved
-            │
-            └── cameraExecutor.execute (后台线程)
-                │
-                ├── forceWriteExif(photoFile, location)
-                ├── verifyExif(photoFile)
-                │
-                └── runOnUiThread
-                    └── handleCaptureSuccess(photoFile)
-                        │
-                        ├── 文件路径模式 → setResult(RESULT_OK) + finish()
-                        │
-                        └── Base64 模式
-                            ├── readBytes() + Base64.encodeToString()
-                            ├── 删除临时文件
-                            └── returnSuccess(base64String)
-```
-
-#### 5.6.5 双返回模式
-
-| 模式 | 触发条件 | 返回数据 |
-|------|----------|----------|
-| **文件路径模式** | `intent.getStringExtra(EXTRA_OUTPUT_PATH) != null` | 无数据，文件已保存到指定路径 |
-| **Base64 模式** | `EXTRA_OUTPUT_PATH` 为 null | `EXTRA_PHOTO_DATA` = Base64 编码的 JPEG |
-
-#### 5.6.6 UI 状态管理
-
-| 状态 | ProgressBar | StatusText | CaptureButton | CancelButton |
-|------|-------------|------------|---------------|-------------|
-| 正常 | GONE | GONE | Visible + Enabled | Enabled |
-| 拍照中 | VISIBLE | VISIBLE ("Processing...") | INVISIBLE + Disabled | Disabled |
-
----
-
-## 6. 数据流与交互时序
-
-### 6.1 打印流程时序
-
-```
- Web App                  WebAppInterface          PrinterService       ConfigManager      打印机
-   │                            │                       │                    │               │
-   │  printJob(json,ok,err)     │                       │                    │               │
-   │ ─────────────────────────► │                       │                    │               │
-   │                            │  scope.launch(IO)     │                    │               │
-   │                            │ ────────────────────► │                    │               │
-   │                            │                       │  loadConfig()      │               │
-   │                            │                       │ ─────────────────► │               │
-   │                            │                       │  PrinterConfig     │               │
-   │                            │                       │ ◄───────────────── │               │
-   │                            │                       │                    │               │
-   │                            │                       │  Socket(ip, port)                  │
-   │                            │                       │ ────────────────────────────────► │
-   │                            │                       │  ESC/POS 指令流                    │
-   │                            │                       │ ────────────────────────────────► │
-   │                            │                       │  close()                           │
-   │                            │                       │ ────────────────────────────────► │
-   │                            │  成功                  │                    │               │
-   │                            │ ◄──────────────────── │                    │               │
-   │  window.ok()               │                       │                    │               │
-   │ ◄───────────────────────── │                       │                    │               │
-```
-
-### 6.2 扫码流程时序
-
-```
- Web App           WebAppInterface        MainActivity         ScannerActivity      ML Kit
-   │                     │                      │                     │                │
-   │  startScan(ok,err)  │                      │                     │                │
-   │ ──────────────────► │                      │                     │                │
-   │                     │  runOnUiThread        │                     │                │
-   │                     │ ───────────────────► │                     │                │
-   │                     │                      │  startActivity       │                │
-   │                     │                      │ ──────────────────► │                │
-   │                     │                      │                     │  startCamera   │
-   │                     │                      │                     │ ─────────────► │
-   │                     │                      │                     │  process(image)│
-   │                     │                      │                     │ ─────────────► │
-   │                     │                      │                     │  barcodes[]    │
-   │                     │                      │                     │ ◄───────────── │
-   │                     │                      │  RESULT_OK(data)    │                │
-   │                     │                      │ ◄────────────────── │                │
-   │                     │                      │                     │                │
-   │  window.ok(data)    │                      │                     │                │
-   │ ◄───────────────────────────────────────── │                     │                │
-```
-
-### 6.3 取证拍照流程时序
-
-```
- Web App       WebAppInterface      MainActivity     EvidencePhotoActivity     GPS
-   │                 │                    │                    │                 │
-   │ takeEvidence    │                    │                    │                 │
-   │ Photo(ok,err)   │                    │                    │                 │
-   │ ──────────────► │                    │                    │                 │
-   │                 │  runOnUiThread     │                    │                 │
-   │                 │ ─────────────────► │                    │                 │
-   │                 │                    │  startActivity     │                 │
-   │                 │                    │ ─────────────────► │                 │
-   │                 │                    │                    │  startGps()     │
-   │                 │                    │                    │ ──────────────► │
-   │                 │                    │                    │  Location       │
-   │                 │                    │                    │ ◄────────────── │
-   │                 │                    │                    │                 │
-   │                 │                    │                    │ [用户点击拍照]   │
-   │                 │                    │                    │ takePicture()   │
-   │                 │                    │                    │ forceWriteExif()│
-   │                 │                    │                    │ verifyExif()    │
-   │                 │                    │                    │                 │
-   │                 │                    │  RESULT_OK(base64) │                 │
-   │                 │                    │ ◄───────────────── │                 │
-   │                 │                    │                    │                 │
-   │ window.ok(b64)  │                    │                    │                 │
-   │ ◄───────────────────────────────────  │                    │                 │
-```
-
----
-
-## 7. 权限模型
-
-### 7.1 AndroidManifest 权限声明
-
-| 权限 | 用途 | 限制条件 |
-|------|------|----------|
-| `INTERNET` | WebView 加载远程页面 + WiFi 打印 Socket 连接 | 无 |
-| `CAMERA` | 条码扫描 + 取证拍照 | 运行时权限 |
-| `ACCESS_FINE_LOCATION` | 取证拍照 GPS 定位 | 运行时权限 |
-| `ACCESS_COARSE_LOCATION` | 粗略定位（降级方案） | 运行时权限 |
-| `BLUETOOTH` | 蓝牙打印 | `maxSdkVersion="30"` |
-| `BLUETOOTH_ADMIN` | 蓝牙管理 | `maxSdkVersion="30"` |
-| `BLUETOOTH_SCAN` | 蓝牙扫描 (Android 12+) | 运行时权限 |
-| `BLUETOOTH_CONNECT` | 蓝牙连接 (Android 12+) | 运行时权限 |
-
-### 7.2 硬件特性声明
-
-```xml
-<uses-feature android:name="android.hardware.camera" android:required="true" />
-```
-
-设备**必须**具备摄像头才能安装此应用。
-
-### 7.3 运行时权限请求时机
-
-| 场景 | 请求的权限 | 请求方式 |
-|------|-----------|----------|
-| 扫码 (`ScannerActivity`) | `CAMERA` | `ActivityCompat.requestPermissions` |
-| 拍照 (`EvidencePhotoActivity`) | `CAMERA` + `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` | `ActivityResultContracts.RequestMultiplePermissions` |
-| WebView 文件选择器拍照 | `CAMERA` + `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` | `ActivityResultContracts.RequestMultiplePermissions` |
-
----
-
-## 8. UI 布局设计
-
-### 8.1 MainActivity 布局 (`activity_main.xml`)
-
-```
-┌──────────────────────────────────────────┐
-│                                          │
-│              WebView (全屏)               │
-│         id: webView                      │
-│         约束: 四边贴合父容器               │
-│                                          │
-│      加载: https://store.toptea.es/kds/  │
-│                                          │
-└──────────────────────────────────────────┘
-```
-
-- 使用 `ConstraintLayout` 作为根布局
-- WebView 占满整个屏幕 (`0dp` + 四边约束)
-- 支持 Edge-to-Edge 显示
-
-### 8.2 ScannerActivity 布局 (`activity_scanner.xml`)
-
-```
-┌──────────────────────────────────────────┐
-│                                          │
-│           PreviewView (全屏)              │
-│         id: previewView                  │
-│         前置摄像头实时预览                 │
-│                                          │
-└──────────────────────────────────────────┘
-```
-
-- 使用 `FrameLayout` 作为根布局
-- `PreviewView` 占满整个屏幕
-- 无 UI 控件（自动检测条码后立即返回结果）
-
-### 8.3 EvidencePhotoActivity 布局 (`activity_evidence_photo.xml`)
-
-```
-┌──────────────────────────────────────────┐
-│ ┌──────────────┐                         │
-│ │GPS: Waiting..│  (gpsStatusTextView)    │
-│ └──────────────┘                         │
-│                                          │
-│           PreviewView (全屏背景)          │
-│         id: viewFinder                   │
-│         后置摄像头实时预览                 │
-│                                          │
-│                              ┌──────┐    │
-│                              │  ◉   │    │ (camera_capture_button)
-│                              │快门键│    │  80x80dp, 居右垂直居中
-│                              └──────┘    │
-│                                          │
-│  ┌────────┐     ┌─────────────────────┐  │
-│  │ Cancel │     │ ProgressBar + Text  │  │ (默认隐藏)
-│  └────────┘     └─────────────────────┘  │
-└──────────────────────────────────────────┘
-```
-
-- 使用 `ConstraintLayout` 作为根布局，黑色背景
-- GPS 状态指示器位于左上角（半透明黑色背景）
-- 快门按钮 (`ImageButton`) 使用自定义 `ic_shutter_button` drawable（白色圆环+实心圆）
-- 取消按钮位于左下角
-- 加载状态指示器（ProgressBar + TextView）默认隐藏，拍照时显示
-
-### 8.4 快门按钮设计 (`ic_shutter_button.xml`)
-
-- `layer-list` drawable，两层叠加
-- 外层：70dp 白色圆环（`stroke 4dp`，透明填充）
-- 内层：白色实心圆（内缩 10dp padding）
-- 模仿 iOS/Android 相机快门按钮样式
-
----
-
-## 9. 构建配置
-
-### 9.1 模块级 `app/build.gradle.kts`
-
-| 配置项 | 值 |
-|--------|-----|
-| `namespace` | `com.toptea.topteakds` |
-| `compileSdk` | 35 |
-| `minSdk` | 26 |
-| `targetSdk` | 35 |
-| `versionCode` | 1 |
-| `versionName` | `"1.0"` |
-| `multiDexEnabled` | `true` |
-| `jvmTarget` | `"11"` |
-| `sourceCompatibility` | Java 11 |
-| `targetCompatibility` | Java 11 |
-| `isMinifyEnabled` | `false` (release) |
-| `viewBinding` | `true` |
-
-### 9.2 签名配置
-
-- **Release 构建**: 使用系统内置的 `debug` 签名 (`signingConfigs.getByName("debug")`)
-- **无自定义 signingConfigs 块** — 之前的 release keystore 引用因密码错误导致 `BadPaddingException`，已被移除
-- 正式发布前需配置正确的 release keystore
-
-### 9.3 Gradle 属性 (`gradle.properties`)
-
-| 属性 | 值 | 说明 |
-|------|-----|------|
-| `org.gradle.jvmargs` | `-Xmx2048m -Dfile.encoding=UTF-8` | JVM 内存配置 |
-| `android.useAndroidX` | `true` | 使用 AndroidX |
-| `kotlin.code.style` | `official` | Kotlin 代码风格 |
-| `android.nonTransitiveRClass` | `true` | R 类资源隔离 |
-| `org.gradle.caching` | `false` | 禁用缓存（避免加密异常） |
-| `org.gradle.vfs.watch` | `false` | 禁用虚拟文件系统监控 |
-| `org.gradle.daemon` | `false` | 禁用 Gradle 守护进程 |
-
-### 9.4 Gradle Wrapper
-
-- **Gradle 版本**: 8.10.2（匹配 AGP 8.8.0 要求）
-
-### 9.5 项目设置 (`settings.gradle.kts`)
-
-```kotlin
-rootProject.name = "TOPTEA_KDS"
-include(":app")
-```
-
----
-
-## 10. 安全设计
-
-### 10.1 网络安全
-
-| 措施 | 实现方式 |
-|------|----------|
-| 允许明文 HTTP | `android:usesCleartextTraffic="true"` — 用于内网打印机通信 |
-| 混合内容 | `MIXED_CONTENT_ALWAYS_ALLOW` — Web 应用可能混合 HTTP/HTTPS 资源 |
-
-> **注意**: 当前配置允许明文流量，适用于内网环境。若部署到公网应考虑加强限制。
-
-### 10.2 错误页面安全
-
-- WebView 加载失败时显示自定义错误页面
-- **不暴露具体 URL**，仅在 Log 中记录 `errorCode` 和 `description`
-- 防止敏感内网地址泄露给用户
-
-### 10.3 JavaScript Bridge 安全
-
-- `WebAppInterface` 使用 `@JavascriptInterface` 注解标记公开方法
-- 参数通过 `JSONObject.quote()` 进行安全转义，防止 JS 注入
-- Bridge 仅暴露必要的 4 个接口方法
-
-### 10.4 文件安全
-
-- `FileProvider` 配置在 `file_paths.xml` 中限定访问范围
-  - `external-cache-path` — 外部缓存目录
-  - `files-path` — 内部文件目录
-- Provider 设置为 `android:exported="false"` + `android:grantUriPermissions="true"`
-
-### 10.5 ProGuard
-
-- 当前 `isMinifyEnabled = false`（关闭混淆）
-- `proguard-rules.pro` 包含注释提示需要保留 JavaScript Interface 类
-- 启用混淆前需添加规则保留 `WebAppInterface` 的公开方法
-
----
-
-## 11. 待实现功能 (TODO)
-
-以下是代码中标记为 TODO 的待实现项：
-
-| 编号 | 位置 | 描述 | 优先级 |
-|------|------|------|--------|
-| T-001 | `MainActivity.kt:44` | 替换 `WEB_APP_URL` 为生产环境 URL | 高 |
-| T-002 | `PrinterService.kt:55-59` | 实现蓝牙打印连接逻辑 | 中 |
-| T-003 | `PrinterService.kt:62-65` | 实现 USB 打印连接逻辑 | 中 |
-| T-004 | `PrinterService.kt:97` | 确认 TSPL 打印机的标签间隙设置 | 低 |
-| T-005 | `PrinterService.kt:103` | 添加 TSPL DENSITY/SPEED 等初始化指令 | 低 |
-| T-006 | `PrinterService.kt:121-128` | 完善 ESC/POS text 指令的 size/align 处理 | 中 |
-| T-007 | `PrinterService.kt:144` | 实现 TSPL 模式的分隔线 (BAR) 指令 | 低 |
-| T-008 | `PrinterService.kt:189` | 添加蓝牙/USB 连接的 finally 关闭逻辑 | 中 |
-| T-009 | 签名配置 | 配置正式发布用的 release keystore | 高 |
-| T-010 | `proguard-rules.pro` | 启用 ProGuard 并配置保留规则 | 中 |
-
----
-
-## 12. 附录：文件清单
-
-### 12.1 Kotlin 源文件
-
-| 文件 | 行数 | 描述 |
+| 操作 | 方法 | 行为 |
 |------|------|------|
-| `MainActivity.kt` | 542 | 主入口，WebView 容器，Activity 调度中心 |
-| `WebAppInterface.kt` | 121 | JavaScript Bridge 接口 |
-| `PrinterService.kt` | 192 | 打印任务执行服务 (ESC/POS + TSPL) |
-| `ConfigManager.kt` | 54 | 打印机配置持久化 |
-| `ScannerActivity.kt` | 205 | CameraX + ML Kit 条码扫描 |
-| `EvidencePhotoActivity.kt` | 379 | CameraX + GPS + EXIF 取证拍照 |
+| **保存** | `saveConfig()` | 异步写入 (`apply()`)，不阻塞调用线程 |
+| **读取** | `loadConfig()` | 同步读取，返回配置数据对象 |
 
-### 12.2 布局文件
+> **注意**: 保存操作使用 `apply()` 而非 `commit()`。`apply()` 是异步的，不会返回写入是否成功。在极端情况下（进程被立即杀死），数据可能丢失。但在本系统场景中，打印机配置不属于关键数据，使用 `apply()` 是合理的。
 
-| 文件 | 描述 |
+---
+
+### 3.5 条码扫描
+
+#### 功能描述
+
+打开摄像头实时预览画面，利用 Google ML Kit 的条码识别引擎逐帧分析图像，检测到第一个有效条码后自动返回结果。
+
+#### 设计要点
+
+**1. 使用前置摄像头**
+
+扫码功能**强制使用前置摄像头**，这是一个关键设计决策。原因是：KDS 平板通常竖立放置、屏幕面朝操作员，前置摄像头正好朝向顾客/柜台方向，方便扫描顾客出示的条码。
+
+> **注意**: 如果设备没有前置摄像头，相机绑定会失败。系统会返回错误消息给 Web 端。
+
+**2. 单次扫描即返回**
+
+系统使用一个布尔标志 (`isScanProcessed`) 确保只返回第一个扫描到的条码结果。一旦检测到有效条码，立即设置结果并关闭扫描界面。
+
+**3. 资源管理**
+
+- 条码扫描器实例由扫描界面创建，在界面销毁时关闭（`onDestroy`）
+- 图像分析使用单线程线程池，同样在 `onDestroy` 时关闭
+- 使用 `STRATEGY_KEEP_ONLY_LATEST` 背压策略，丢弃来不及处理的帧，避免内存累积
+
+#### 扫描流程
+
+```
+用户触发扫码 → 检查相机权限
+  ├── 未授权 → 弹出权限请求
+  │     ├── 用户同意 → 启动相机
+  │     └── 用户拒绝 → 返回错误
+  └── 已授权 → 启动相机
+        │
+        └── 逐帧分析图像
+              ├── 未检测到条码 → 继续扫描下一帧
+              └── 检测到条码 → 返回条码文本 → 关闭扫描界面
+```
+
+#### 返回值
+
+| 结果 | 数据 |
 |------|------|
-| `activity_main.xml` | 全屏 WebView |
-| `activity_scanner.xml` | 全屏相机预览 |
-| `activity_evidence_photo.xml` | 相机预览 + 快门键 + GPS 状态 + 进度条 |
+| 成功 | 条码原始文本（`rawValue`），不限类型（QR Code、EAN-13、Code 128 等） |
+| 失败/取消 | 错误描述字符串（如 "Camera permission was denied"） |
 
-### 12.3 XML 配置
+---
 
-| 文件 | 描述 |
-|------|------|
-| `AndroidManifest.xml` | 应用清单（3 个 Activity + FileProvider） |
-| `file_paths.xml` | FileProvider 路径映射 |
-| `backup_rules.xml` | 数据备份规则 |
-| `data_extraction_rules.xml` | 数据提取规则 |
+### 3.6 取证拍照
 
-### 12.4 Gradle 配置
+#### 功能描述
 
-| 文件 | 描述 |
-|------|------|
-| `build.gradle.kts` (项目级) | Plugin 声明 |
-| `app/build.gradle.kts` (模块级) | 编译/依赖/签名配置 |
-| `settings.gradle.kts` | 项目名 + 模块声明 |
-| `gradle.properties` | JVM 参数 + AndroidX 开关 |
-| `gradle/libs.versions.toml` | 版本目录 |
-| `gradle-wrapper.properties` | Gradle 8.10.2 |
-| `proguard-rules.pro` | ProGuard 规则（默认关闭） |
+打开后置摄像头拍照，并强制将 GPS 定位信息、时间戳、设备信息写入照片的 EXIF 元数据。设计目的是为餐饮外卖配送、商品验收等场景提供带有地理坐标和时间证明的照片证据。
+
+#### 设计要点
+
+**1. GPS 强制模式 — 不定位不拍照**
+
+这是本模块最重要的设计约束：**如果没有获取到 GPS 定位信息，拍照按钮不起作用**。用户点击拍照时，如果定位尚未就绪，系统会弹出提示并尝试重新获取 GPS，但不会执行拍照。
+
+> **注意**: 在室内或 GPS 信号弱的环境中，这个限制可能导致用户无法拍照。GPS 获取使用了降级策略（见下文），但如果完全无法获取定位，用户将被阻塞。
+
+**2. GPS 获取策略 — 三级降级**
+
+```
+第一优先: 高精度实时定位（PRIORITY_HIGH_ACCURACY）
+  ├── 成功 → GPS 状态显示绿色 "GPS: Locked"
+  └── 返回 null
+       │
+       └── 第二优先: 最后已知位置（lastLocation）
+             ├── 成功 → GPS 状态显示黄色 "GPS: Last Known"
+             └── 失败 → GPS 状态显示红色 "GPS: Unavailable"
+                         此时拍照按钮不可用
+```
+
+**3. 双重 EXIF 写入 — 双保险机制**
+
+照片的 GPS 信息通过两种方式写入：
+
+| 写入方式 | 时机 | 说明 |
+|----------|------|------|
+| CameraX 元数据 | 拍照时自动 | 通过 `ImageCapture.Metadata.location` 设置，由 CameraX 自动写入 |
+| 手动强制写入 | 拍照后 | 通过 ExifInterface API 再次手动写入所有 EXIF 标签 |
+
+为什么需要双重写入？因为某些设备/厂商的 CameraX 实现可能不完整，不保证一定会写入 GPS EXIF。手动写入作为"保险"，确保 100% 写入。
+
+**4. EXIF 写入并验证**
+
+拍照后系统会立即读回照片的 EXIF，检查经纬度是否成功写入。验证结果会在 Log 中输出，拍照成功时还会 Toast 显示 GPS 坐标。
+
+#### 写入的 EXIF 标签
+
+| EXIF 标签 | 写入内容 |
+|-----------|----------|
+| GPS 经纬度 | 设备当前 GPS 坐标 |
+| GPS 海拔 | 设备当前海拔（如可用） |
+| 拍摄时间 | 当前日期时间 (`yyyy:MM:dd HH:mm:ss`) |
+| 原始拍摄时间 | 同上 |
+| 数字化时间 | 同上 |
+| 设备制造商 | `"Google"` |
+| 设备型号 | `"TopTeaKDS"` |
+| 软件名称 | `"TopTeaKDS App"` |
+| 时区偏移 | 设备当前时区（如 `+08:00`） |
+
+> **注意**: 设备制造商设为 `"Google"` 而非实际设备制造商，这是刻意设计。如需改为真实设备信息，需修改此处逻辑。
+
+#### 双返回模式
+
+本模块有两种调用方式，返回数据格式不同：
+
+| 调用来源 | 返回方式 | 场景 |
+|----------|----------|------|
+| **JS Bridge 调用** (`takeEvidencePhoto`) | 返回 Base64 编码的 JPEG 字符串 | Web 端 JS 调用拍照，需要在 Web 页面中显示或上传照片 |
+| **WebView 文件选择器** (`<input type="file" capture>`) | 文件已保存到指定路径，返回文件 URI | Web 端 HTML 表单的文件上传控件触发 |
+
+两种模式的区别在于是否传入了输出文件路径：
+- 传入路径 → 照片保存到该路径，不返回数据，调用方通过文件 URI 访问
+- 未传入路径 → 创建临时文件 → 拍照 → 读取为 Base64 → 删除临时文件 → 返回 Base64
+
+> **注意**: Base64 模式下，大尺寸照片的 Base64 字符串可能非常长（几 MB），通过 `evaluateJavascript` 传递大字符串可能有性能问题。如遇此问题，建议在拍照端压缩图片质量或分辨率。
+
+---
+
+## 4. 数据流与交互时序
+
+### 4.1 打印流程
+
+```
+ Web 应用                JS Bridge                 打印服务            配置管理        打印机
+   │                        │                        │                  │             │
+   │  printJob(json,ok,err) │                        │                  │             │
+   │ ─────────────────────► │                        │                  │             │
+   │                        │  切换到 IO 线程         │                  │             │
+   │                        │ ─────────────────────► │                  │             │
+   │                        │                        │  读取配置         │             │
+   │                        │                        │ ───────────────► │             │
+   │                        │                        │  返回 IP/端口    │             │
+   │                        │                        │ ◄─────────────── │             │
+   │                        │                        │                  │             │
+   │                        │                        │  TCP Socket 连接               │
+   │                        │                        │ ──────────────────────────────►│
+   │                        │                        │  发送打印指令字节流             │
+   │                        │                        │ ──────────────────────────────►│
+   │                        │                        │  关闭连接                       │
+   │                        │  打印成功               │                  │             │
+   │                        │ ◄───────────────────── │                  │             │
+   │  window.ok()           │                        │                  │             │
+   │ ◄───────────────────── │                        │                  │             │
+```
+
+### 4.2 扫码流程
+
+```
+ Web 应用         JS Bridge            主入口              扫码界面         条码引擎
+   │                 │                    │                   │               │
+   │  startScan      │                    │                   │               │
+   │ ──────────────► │                    │                   │               │
+   │                 │  切换到 UI 线程     │                   │               │
+   │                 │ ────────────────► │                   │               │
+   │                 │                    │  跳转扫码界面     │               │
+   │                 │                    │ ────────────────►│               │
+   │                 │                    │                   │  打开前置摄像头│
+   │                 │                    │                   │  逐帧分析     │
+   │                 │                    │                   │ ─────────────►│
+   │                 │                    │                   │  识别结果     │
+   │                 │                    │                   │ ◄─────────────│
+   │                 │                    │  返回条码文本     │               │
+   │                 │                    │ ◄────────────────│               │
+   │                 │                    │                   │               │
+   │  window.ok(条码文本)                 │                   │               │
+   │ ◄─────────────────────────────────── │                   │               │
+```
+
+### 4.3 取证拍照流程
+
+```
+ Web 应用       JS Bridge          主入口           拍照界面            GPS
+   │               │                 │                 │                │
+   │ takeEvidence  │                 │                 │                │
+   │ Photo(ok,err) │                 │                 │                │
+   │ ─────────────►│                 │                 │                │
+   │               │ 切换到 UI 线程   │                 │                │
+   │               │───────────────►│                 │                │
+   │               │                 │  跳转拍照界面   │                │
+   │               │                 │───────────────►│                │
+   │               │                 │                 │  获取GPS定位   │
+   │               │                 │                 │──────────────►│
+   │               │                 │                 │  定位坐标      │
+   │               │                 │                 │◄──────────────│
+   │               │                 │                 │                │
+   │               │                 │                 │ [用户点击拍照] │
+   │               │                 │                 │ 拍照 + 写EXIF  │
+   │               │                 │                 │ 验证EXIF       │
+   │               │                 │                 │ 转Base64       │
+   │               │                 │                 │                │
+   │               │                 │  返回 Base64    │                │
+   │               │                 │◄───────────────│                │
+   │               │                 │                 │                │
+   │ window.ok(base64)               │                 │                │
+   │◄─────────────────────────────── │                 │                │
+```
+
+---
+
+## 5. 权限模型与安全设计
+
+### 5.1 所需权限
+
+| 权限 | 类型 | 用途 | 使用场景 |
+|------|------|------|----------|
+| **网络访问** | 安装时自动授予 | WebView 加载远程页面 + WiFi Socket 打印 | 始终需要 |
+| **摄像头** | 运行时请求 | 条码扫描 + 取证拍照 | 用户触发扫码或拍照时 |
+| **精确位置** | 运行时请求 | 取证拍照写入 GPS EXIF | 用户触发拍照时 |
+| **粗略位置** | 运行时请求 | 精确位置的降级方案 | 随精确位置一起请求 |
+| **蓝牙扫描** | 运行时请求 | 蓝牙打印机发现 | 配置蓝牙打印机时（未实现） |
+| **蓝牙连接** | 运行时请求 | 蓝牙打印机连接 | 蓝牙打印时（未实现） |
+
+> **注意**: 应用声明了 `android.hardware.camera` 为必需硬件特性 (`required="true"`)。这意味着没有摄像头的设备（如部分 POS 机）将无法在 Play Store 中安装此应用。如果需要支持无摄像头设备，应改为 `required="false"` 并在代码中做功能降级。
+
+### 5.2 权限请求时机
+
+权限不在 APP 启动时统一请求，而是**按需请求**：
+
+| 功能 | 请求的权限 | 请求时机 |
+|------|-----------|----------|
+| 条码扫描 | 仅 `CAMERA` | 打开扫码界面时 |
+| 取证拍照 | `CAMERA` + `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` | 打开拍照界面时 |
+| WebView 文件拍照 | `CAMERA` + `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` | Web 页面触发文件选择器时 |
+
+### 5.3 安全设计
+
+#### 网络安全
+
+- **允许明文 HTTP 流量** (`usesCleartextTraffic="true"`) — 因为 WiFi 打印机通信走内网 TCP Socket，不支持 TLS
+- **允许混合内容** — Web 应用的 HTTPS 页面可能加载内网 HTTP 资源
+
+> **注意**: 这些设置降低了网络安全性。在公网部署时应考虑收紧：使用 `network_security_config.xml` 仅对打印机 IP 段允许明文流量。
+
+#### JavaScript Bridge 安全
+
+- 仅暴露 4 个必要的接口方法，不暴露敏感系统 API
+- 回调参数通过 `JSONObject.quote()` 安全转义，防止 JavaScript 注入
+- 回调执行包裹在 `try-catch` 中，Web 端函数不存在不会导致 APP 崩溃
+
+#### 错误页面安全
+
+- 加载失败时不向用户显示 URL（防止内网地址泄露）
+- 仅在 Android 系统日志中记录详细错误信息
+
+#### 文件访问安全
+
+- 使用 FileProvider 对外共享文件，不直接暴露文件系统路径
+- FileProvider 设为不可导出 (`exported="false"`)，仅通过授权 URI 临时授予访问权限
+- 访问范围限定在外部缓存目录和内部文件目录
+
+---
+
+## 6. UI 交互设计
+
+### 6.1 主界面
+
+全屏 WebView，无原生 UI 控件。所有用户交互通过 Web 页面完成。支持 Edge-to-Edge 全屏显示（利用系统栏区域）。
+
+### 6.2 扫码界面
+
+全屏摄像头预览画面，无任何按钮或 UI 控件。用户只需将条码对准摄像头区域，系统检测到条码后自动关闭界面返回结果。
+
+> **注意**: 当前设计没有"手动关闭"按钮。如果用户误触发扫码且没有条码可扫，只能通过系统返回键退出（此时会返回"取消"结果）。
+
+### 6.3 拍照界面
+
+横屏布局，黑色背景，包含以下 UI 元素：
+
+| 元素 | 位置 | 功能 |
+|------|------|------|
+| **摄像头预览** | 全屏背景 | 后置摄像头实时画面 |
+| **GPS 状态指示器** | 左上角 | 显示 GPS 定位状态，颜色编码：绿色=已锁定、黄色=使用历史位置、红色=不可用 |
+| **快门按钮** | 右侧垂直居中 | 白色圆环+实心圆设计（类似 iOS 相机按钮），80x80dp |
+| **取消按钮** | 左下角 | 文字按钮 "Cancel"，点击后取消拍照返回 |
+| **加载指示器** | 屏幕中央 | 拍照后显示旋转进度条 + "Processing..." 文字，拍照期间隐藏快门键 |
+
+**拍照期间的 UI 状态变化**:
+- 点击快门后：快门按钮隐藏、取消按钮禁用、显示加载进度
+- 处理完成后：恢复所有按钮状态（如果出错）或关闭界面（如果成功）
+
+---
+
+## 7. 注意事项与设计约束
+
+### 7.1 Web 端开发注意事项
+
+1. **回调函数必须挂在 `window` 上**: JS Bridge 的回调机制要求回调函数是全局可访问的。不能使用闭包或模块私有函数
+2. **回调函数名不能包含特殊字符**: 函数名被直接拼接到 `javascript:` 协议的 JS 代码中，应仅包含字母、数字、下划线
+3. **每次调用的回调函数名应唯一**: 如果连续调用两次 `printJob` 并使用同一个回调名，第二次调用的回调可能覆盖第一次的结果
+4. **Base64 照片可能很大**: `takeEvidencePhoto` 返回的 Base64 字符串可能达到几 MB，Web 端应做好大数据接收准备
+
+### 7.2 打印相关注意事项
+
+1. **WiFi 打印机必须在同一局域网**: 打印使用 TCP Socket 直连，打印机必须与平板在同一网段
+2. **默认端口 9100**: 这是热敏打印机的标准 RAW 打印端口，大多数打印机开箱即用
+3. **GBK 编码假设**: 当前所有 ESC/POS 文本强制使用 GBK 编码。如果打印机不支持 GBK（如部分海外型号），需要修改编码
+4. **TSPL 标签间隙**: 默认设为 2mm。不同标签纸的间隙不同，可能需要根据实际标签纸调整
+5. **打印机连接是一次性的**: 每次打印都建立新的 Socket 连接，打印完毕立即关闭。不维持长连接
+
+### 7.3 扫码相关注意事项
+
+1. **前置摄像头固定**: 当前硬编码使用前置摄像头，如需使用后置摄像头需要修改代码
+2. **环境光线影响**: 条码识别对光线敏感。在厨房强油烟/弱光环境下识别率可能下降
+3. **单次扫描**: 每次启动只返回第一个条码结果，如需连续扫描需要重新调用 `startScan`
+
+### 7.4 拍照相关注意事项
+
+1. **GPS 强制**: 没有 GPS 信号时用户无法拍照，这在室内环境可能是个问题
+2. **GPS 首次定位**: 首次打开 GPS 可能需要较长时间（冷启动），用户需要等待
+3. **时区偏移格式**: EXIF 时区格式要求 `+HH:MM`（如 `+08:00`），代码中做了格式转换，但只处理了 5 位标准格式
+
+### 7.5 通用注意事项
+
+1. **横屏锁定**: 所有界面强制横屏。如果 Web 应用包含竖屏优化的页面，显示可能不理想
+2. **缓存每次清除**: 用户每次打开 APP 都会重新加载所有 Web 资源，在弱网环境下体验较差
+3. **ProGuard 未启用**: 当前关闭了代码混淆。启用混淆前必须添加规则保留 `@JavascriptInterface` 注解的方法，否则 JS Bridge 会失效
+4. **明文流量**: 当前允许所有明文 HTTP 流量。如果 KDS Web 应用部署在公网，应考虑仅对打印机内网 IP 允许明文
+
+---
+
+## 8. 待实现功能
+
+| 编号 | 功能 | 说明 | 优先级 |
+|------|------|------|--------|
+| T-001 | 蓝牙打印 | 需集成厂商蓝牙 SDK，通过 MAC 地址建立连接并发送打印数据 | 中 |
+| T-002 | USB 打印 | 需集成厂商 USB SDK，建立 USB 连接并发送打印数据 | 中 |
+| T-003 | ESC/POS 文本格式化 | 当前 `text` 指令不支持字体大小、对齐方式等参数，需要补充 ESC/POS 字号切换和对齐指令 | 中 |
+| T-004 | TSPL 分隔线 | TSPL 模式下 `divider` 指令尚未实现，可使用 `BAR` 指令画线 | 低 |
+| T-005 | TSPL 高级配置 | 标签打印的 DENSITY（浓度）、SPEED（速度）等初始化参数尚未支持 | 低 |
+| T-006 | TSPL 标签间隙可配置 | 当前硬编码 2mm 间隙，应支持 Web 端通过 JSON 指定或通过配置管理设置 | 低 |
+| T-007 | Release 签名 | 正式发布前需配置有效的 Release Keystore 签名 | 高 |
+| T-008 | ProGuard 配置 | 启用代码混淆，并添加规则保留 JS Bridge 方法 | 中 |
 
 ---
 
 > **文档结束**
-> 本文档基于截至 2026-02-06 的代码仓库自动分析生成。

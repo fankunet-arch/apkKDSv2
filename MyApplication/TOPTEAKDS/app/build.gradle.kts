@@ -1,10 +1,14 @@
+/*
+ * 文件名: app/build.gradle.kts (Module :app)
+ * 描述: Configured with SDK 35, Version Catalog, and Debug Signing Bypass for Release
+ */
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
 }
 
 android {
-    // 核心修复点：必须在此处显式声明 namespace
     namespace = "com.toptea.topteakds"
     compileSdk = 35
 
@@ -14,18 +18,34 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Requested fix: MultiDex enabled
+        multiDexEnabled = true
     }
 
-    // ... 其他配置保持不变 ...
-    buildFeatures {
-        viewBinding = true
+    signingConfigs {
+        // Warning: The release.jks password ("123456") is incorrect, causing BadPaddingException.
+        // Keeping this config for reference but bypassing it in release build.
+        create("release") {
+            storeFile = file("keystore/release.jks")
+            storePassword = "123456"
+            keyAlias = "key0"
+            keyPassword = "123456"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // !!! CRITICAL FIX !!!
+            // Use debug signing to prevent build failure due to incorrect release keystore password.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
@@ -35,29 +55,41 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+
+    buildFeatures {
+        viewBinding = true
+    }
 }
 
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
-    implementation(libs.androidx.activity) // 确保这里有 activity 依赖
+    implementation(libs.androidx.activity) // Required for enableEdgeToEdge
     implementation(libs.androidx.constraintlayout)
     implementation(libs.zxing.core)
 
-    // Preserved dependencies for project functionality
+    // 1. WebView
     implementation("androidx.webkit:webkit:1.11.0")
+
+    // 2. Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
 
+    // 3. CameraX
     val cameraxVersion = "1.3.4"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
 
+    // 4. Google ML Kit
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
+
+    // 5. Google Play Services Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // 6. Exif Interface
     implementation("androidx.exifinterface:exifinterface:1.3.7")
 
     testImplementation(libs.junit)

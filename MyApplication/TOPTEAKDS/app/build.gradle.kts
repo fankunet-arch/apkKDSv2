@@ -1,6 +1,6 @@
 /*
  * 文件名: app/build.gradle.kts (Module :app)
- * 描述: Configured with SDK 35, Version Catalog, and Debug Signing Bypass for Release
+ * 描述: Configured with SDK 35, Version Catalog, debug signing for release builds
  */
 
 plugins {
@@ -23,17 +23,6 @@ android {
 
         // Requested fix: MultiDex enabled
         multiDexEnabled = true
-    }
-
-    signingConfigs {
-        // Warning: The release.jks password ("123456") is incorrect, causing BadPaddingException.
-        // Keeping this config for reference but bypassing it in release build.
-        create("release") {
-            storeFile = file("keystore/release.jks")
-            storePassword = "123456"
-            keyAlias = "key0"
-            keyPassword = "123456"
-        }
     }
 
     buildTypes {
